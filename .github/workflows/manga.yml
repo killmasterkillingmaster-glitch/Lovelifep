@@ -1,0 +1,49 @@
+name: Manga Fast Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      password: { required: true }
+      file_id: { required: true }
+      chat_id: { required: true }
+      msg_id: { required: true }
+      user_id: { required: true }
+      lang: { required: true }
+      prompt: { required: true }
+      style: { required: true }
+      fname: { required: true }
+
+jobs:
+  translation_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Verify HF Connection Password Match
+      - name: Security Check
+        run: |
+          if [ "${{ github.event.inputs.password }}" != "${{ secrets.RECONNECT1234555 }}" ]; then
+            echo "Security Breach! Connection Password Mismatch!"
+            exit 1
+          fi
+          echo "Connection Secured & Authenticated!"
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with: { python-version: '3.10' }
+
+      - name: Install Manga Translator & Core
+        run: |
+          git clone https://github.com/zyddnys/manga-image-translator.git
+          cd manga-image-translator
+          pip install -r requirements.txt
+          pip install pyrogram tgcrypto
+
+      - name: Run Fast Speed Worker
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          INPUTS: ${{ toJSON(github.event.inputs) }}
+        run: python worker.py
