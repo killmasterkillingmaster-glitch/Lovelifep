@@ -4,6 +4,8 @@ import subprocess
 import time
 import asyncio
 import shutil
+import traceback
+import requests
 from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image
@@ -14,7 +16,6 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 DESK_CHANNEL_ID = -1003974162679
 INPUTS = json.loads(os.environ["INPUTS"])
 
-# Client settings optimized with elevated max concurrent transfers
 app = Client("worker_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
 
 last_time = 0
@@ -30,7 +31,6 @@ def get_process_bar(percent):
 async def progress_tracker(current, total, c_id, m_id, action_type):
     global last_time
     now = time.time()
-    # Throttled interval (4s) preserves system memory and prevents API rate limiting
     if now - last_time > 4 or current == total:
         percent = (current / total) * 100 if total > 0 else 0
         speed_mb = ((current / 1048576) / (now - last_time + 0.1)) if last_time > 0 else 0
@@ -61,7 +61,7 @@ def optimize_images(directory):
                     img.save(file_path, "JPEG", optimize=True, quality=80)
                 except: pass
 
-async def main():
+async def worker_core():
     async with app:
         c_id = int(INPUTS["chat_id"])
         m_id = int(INPUTS["msg_id"])
@@ -69,6 +69,12 @@ async def main():
         fname = INPUTS["fname"]
         lang = INPUTS["lang"]
         ext = fname.split('.')[-1].lower()
+
+        # Dynamic Password Verification Inside the Python Thread
+        dispatch_password = os.environ.get("DISPATCH_PASSWORD")
+        provided_password = INPUTS.get("password")
+        if dispatch_password and provided_password != dispatch_password:
+            raise PermissionError("Security Check Failed: Dispatch passwords do not match.")
 
         global last_time
         last_time = time.time()
@@ -85,7 +91,6 @@ async def main():
             shutil.unpack_archive(process_target, "input_folder")
             process_target = "input_folder"
 
-        # Count pages recursively to handle nested folders safely
         img_files = []
         if os.path.isdir(process_target):
             for root, _, files in os.walk(process_target):
@@ -96,7 +101,6 @@ async def main():
         else:
             total_pages = 1
 
-        # Modern positional mode parsing (running local)
         target_lang_code = "HIN" if lang == "hienglish" else "ENG"
         cmd = [
             "python", "-m", "manga_translator", "local", "-i", process_target, 
@@ -117,13 +121,11 @@ async def main():
         
         while True:
             try:
-                # Controlled read interval to prevent thread starving
                 line = await asyncio.wait_for(process.stdout.readline(), timeout=5.0)
             except asyncio.TimeoutError:
                 if process.returncode is not None: break
                 continue
             
-            # EOF safety: breaks immediately to eliminate CPU lockups
             if not line: break
                 
             decoded = line.decode('utf-8', errors='ignore').strip()
@@ -154,7 +156,6 @@ async def main():
         
         await process.wait()
 
-        # Crash validation protector
         if not os.path.exists(out_target):
             error_text = f"❌ **Task Failed!**\nGitHub Worker crashed during translation (process exited with code `{process.returncode}`)."
             await app.edit_message_text(c_id, m_id, error_text)
@@ -184,6 +185,22 @@ async def main():
             if c_id != u_id:
                 await app.send_message(c_id, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={u_id}'>User</a>. File delivered in PM.", parse_mode=pyrogram.enums.ParseMode.HTML)
         except: pass
+
+async def main():
+    try:
+        await worker_core()
+    except Exception as e:
+        # If any fatal exception is thrown, bypass Pyrogram completely and post the traceback straight to Telegram via raw HTTP REST
+        tb = traceback.format_exc()
+        err_msg = f"❌ **GitHub Worker Script Crash Report!**\n\n**Error:** `{str(e)}`\n\n**Traceback:**\n`{tb[-1000:]}`"
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": int(INPUTS["chat_id"]), "text": err_msg, "parse_mode": "Markdown"},
+                timeout=10
+            )
+        except Exception as reporting_error:
+            print(f"Failed to transmit crash logs: {reporting_error}")
 
 if __name__ == "__main__":
     asyncio.run(main())
