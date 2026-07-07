@@ -20,7 +20,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      # Verify HF Connection Password Match
+      # Verify HF Connection Password Match (Full Security)
       - name: Security Check
         run: |
           if [ "${{ github.event.inputs.password }}" != "${{ secrets.RECONNECT1234555 }}" ]; then
@@ -31,14 +31,15 @@ jobs:
 
       - name: Setup Python
         uses: actions/setup-python@v4
-        with: { python-version: '3.10' }
+        with: 
+          python-version: '3.10'
 
-      - name: Install Manga Translator & Core
+      - name: Install Manga Translator & Pyrogram Dependencies
         run: |
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           pip install -r requirements.txt
-          pip install pyrogram tgcrypto
+          pip install pyrogram tgcrypto Pillow
 
       - name: Run Fast Speed Worker
         env:
