@@ -1,320 +1,199 @@
 import os
-import sys
 import time
 import asyncio
-import json
-import re
-import subprocess
+import threading
 import requests
-import traceback
-import html
+import psutil
 import pyrogram.utils
-import pyrogram
-from pyrogram import Client
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ParseMode
-from PIL import Image
+from pyrogram import Client, filters, idle
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.enums import ChatType
+from flask import Flask
 
-# Client peer resolver bypass (Strict Decoupled hardsub style)
+# Safe Channel / Peer ID Invalid Bypass
 pyrogram.utils.get_peer_type = lambda p: "channel" if str(p).startswith("-100") else "chat" if str(p).startswith("-") else "user"
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+REPO_NAME = os.getenv("REPO_NAME", "killmasterkillingmaster-glitch/Lovelifep").strip()
 
-INPUTS_RAW = os.getenv("INPUTS")
-if not INPUTS_RAW:
-    print("Environment variables missing. Termination triggered.")
-    sys.exit(1)
+OWNER_ID = 5344078567
+ALLOWED_USER = 5351848105
+GROUP_ID = -1003899919015
+SAFE_CHANNEL_ID = -1003962165512
+
+app = Client("MangaFrontend", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=16)
+
+user_states, user_prompts, pending_tasks = {}, {}, {}
+
+def is_authorized(m: Message):
+    if not m.from_user: return False
+    u_id = m.from_user.id
+    return u_id in [OWNER_ID, ALLOWED_USER] or (m.chat and m.chat.id == GROUP_ID)
+
+@app.on_message(filters.command("start"))
+async def start_cmd(c, m: Message):
+    await m.reply("✅ **Manga Translator Ready!**\nSend file here or in group with `/english` or `/hienglish`.")
+
+@app.on_message(filters.command("stats"))
+async def stats_cmd(c, m: Message):
+    ram = psutil.virtual_memory()
+    cpu = psutil.cpu_percent()
+    await m.reply(f"📊 **HF Diagnostics:**\n🖥️ CPU: `{cpu}%`\n💾 RAM: `{ram.percent}%`")
+
+@app.on_message(filters.command("addprompt"))
+async def add_prompt(c, m: Message):
+    if not is_authorized(m): return
+    uid = m.from_user.id
+    if uid not in user_prompts: user_prompts[uid] = []
+    if len(user_prompts[uid]) >= 2: return await m.reply("❌ Max 2 prompts allowed. Use /deleteprompt")
+    user_states[uid] = {"state": "WAITING_NAME"}
+    await m.reply("📝 **Send Prompt Name:**")
+
+@app.on_message(filters.command("deleteprompt"))
+async def del_prompt(c, m: Message):
+    uid = m.from_user.id
+    if uid in user_prompts: user_prompts[uid].clear()
+    await m.reply("🗑️ All saved prompts deleted.")
+
+@app.on_message((filters.text | filters.document) & ~filters.command(["start", "stats", "addprompt", "deleteprompt", "english", "hienglish"]))
+async def handle_inputs(c, m: Message):
+    if not m.from_user: return
+    uid = m.from_user.id
+    session = user_states.get(uid)
+    if not session: return
+
+    if session.get("state") == "WAITING_NAME" and m.text:
+        session["state"] = "WAITING_FILE"
+        session["name"] = m.text
+        await m.reply(f"✅ Name Saved: `{m.text}`\n📄 Now send `.txt` prompt file.")
+    elif session.get("state") == "WAITING_FILE" and m.document and m.document.file_name.endswith('.txt'):
+        st = await m.reply("⏳ Saving...")
+        file_path = await m.download()
+        with open(file_path, "r", encoding="utf-8") as f: txt_data = f.read()
+        os.remove(file_path)
+        user_prompts[uid].append({"name": session["name"], "text": txt_data})
+        del user_states[uid]
+        await st.delete()
+        pin = await m.reply(f"📌 **Prompt Saved:** {session['name']}")
+        try: await pin.pin()
+        except: pass
+
+@app.on_message(filters.command(["english", "hienglish"]))
+async def translate_cmd(c, m: Message):
+    if not is_authorized(m): return
     
-INPUTS = json.loads(INPUTS_RAW)
+    target_msg = m.reply_to_message if m.reply_to_message else m
+    if not target_msg.document and not target_msg.photo:
+        return await m.reply("❌ Reply to a ZIP/Image/PDF file.")
+    
+    lang = "hienglish" if "hienglish" in m.command[0].lower() else "english"
+    uid, cid = m.from_user.id, m.chat.id
+    
+    st = await m.reply("⏳ **Verification:** File sending to Safe Channel...")
+    
+    # --- SAFE CHANNEL LOGIC ---
+    try:
+        copied = await target_msg.copy(SAFE_CHANNEL_ID)
+        file_id = copied.document.file_id if copied.document else copied.photo.file_id
+        file_name = copied.document.file_name if copied.document else "image.jpg"
+    except Exception as e:
+        return await st.edit(f"❌ **Safe Channel Error:** Bot is not admin in {SAFE_CHANNEL_ID} or Invalid ID.\nLogs: `{e}`")
 
-CHAT_ID = int(INPUTS["chat_id"])
-USER_ID = int(INPUTS["user_id"])
-TRIGGER_MSG_ID = int(INPUTS["msg_id"])
-FILE_ID = INPUTS["file_id"]
-LANG = INPUTS["lang"]
-STYLE = INPUTS["style"]
-FNAME = INPUTS["fname"]
-EXT = FNAME.split('.')[-1].lower()
-
-DESK_CHANNEL_ID = -1003974162679
-
-last_time = 0
-start_time = 0
-status_msg_id = TRIGGER_MSG_ID
-
-# Aligned inline button payloads
-cancel_markup_payload = {
-    "inline_keyboard": [[
-        {"text": "🛑 Skip / Cancel", "callback_data": "cancel_active_run"}
-    ]]
-}
-
-def reset_prog():
-    global last_time, start_time
-    last_time = time.time()
-    start_time = time.time()
-
-# --- CUSTOM PROGRESS BAR STYLES MATCHED WITH HARDSUB ---
-def get_download_bar(percent):
-    total = 20
-    filled = int(percent / 100 * total)
-    return f"[{'>' * filled}{'-' * (total - filled)}]"
-
-def get_process_bar(percent):
-    total = 20
-    filled = int(percent / 100 * total)
-    seq = ["•", "°", ":", "°", "•", ":"]
-    bar = "".join(seq[i % len(seq)] for i in range(filled))
-    return f"[{bar}{'-' * (total - filled)}]"
-
-def get_send_bar(percent):
-    total = 20
-    filled = int(percent / 100 * total)
-    return f"[{'▓' * filled}{'▒' * (total - filled)}]"
-
-# --- SYNC HTTP UI UPDATER (DETACHED PROCESS) ---
-def _sync_http_edit(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-    payload = {
-        "chat_id": CHAT_ID,
-        "message_id": status_msg_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "reply_markup": cancel_markup_payload
-    }
-    try: requests.post(url, json=payload, timeout=8)
+    # Delete original message (Group ho ya PM, dono me delete karega)
+    try:
+        if m.reply_to_message: await m.reply_to_message.delete()
+        await m.delete()
     except: pass
 
-async def update_http_status(text):
-    await asyncio.to_thread(_sync_http_edit, text)
+    task_id = f"task_{m.id}"
+    pending_tasks[task_id] = {"file_id": file_id, "uid": uid, "cid": cid, "lang": lang, "fname": file_name, "prompt": "none"}
 
-# --- RECURSIVE METRIC TRANSLATION & TRACKING ---
-async def prog(current, total, app_instance, step_name):
-    global last_time, start_time
-    now = time.time()
-    if start_time == 0:
-        start_time = now
-        last_time = now
-        return
-        
-    if now - last_time > 4 or current == total:
-        elapsed = now - start_time
-        speed = current / elapsed if elapsed > 0 else 0
-        speed_mb = (speed / 1024) / 1024
-        percent = (current / total) * 100 if total > 0 else 0
-        
-        if step_name == "manga_download":
-            bar = get_download_bar(percent)
-            text = f"📥 **Downloading Document**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
-        else:
-            bar = get_send_bar(percent)
-            text = f"📤 **Sending Processed Manga**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+    kb = [[InlineKeyboardButton("Default Prompt", callback_data=f"p_default_{task_id}")]]
+    if uid in user_prompts:
+        for idx, p in enumerate(user_prompts[uid]):
+            kb.append([InlineKeyboardButton(f"Custom: {p['name']}", callback_data=f"p_{idx}_{task_id}")])
             
-        try: await app_instance.edit_message_text(CHAT_ID, status_msg_id, text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Skip / Cancel", callback_data="cancel_active_run")]]))
-        except: pass
-        last_time = now
+    await st.edit("🔍 **Step 1: Choose Translation Prompt**", reply_markup=InlineKeyboardMarkup(kb))
 
-def optimize_images(directory):
-    for root, _, files in os.walk(directory):
-        for file in files:
-            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                file_path = os.path.join(root, file)
-                try:
-                    img = Image.open(file_path)
-                    if img.mode in ("RGBA", "P"): img = img.convert("RGB")
-                    if img.width > 1200:
-                        ratio = 1200 / img.width
-                        new_h = int(img.height * ratio)
-                        img = img.resize((1200, new_h), Image.LANCZOS)
-                    img.save(file_path, "JPEG", optimize=True, quality=80)
-                except: pass
-
-# --- STRICT HARDSUB ROUTE DELIVERY ADAPTER (DOCUMENT FORMAT ONLY) ---
-async def deliver_manga_asset(app_instance, chat_id, target_user, file_path, caption, progress_callback):
-    if not os.path.exists(file_path) or os.path.getsize(file_path) < 100:
-        raise Exception("Processed manga package output is missing or empty!")
-
-    desk_msg, file_id = None, None
-    reset_prog()
-    
-    # Stage 1: Desk Central logs channel backup upload
+@app.on_callback_query(filters.regex("cancel_active_run"))
+async def cancel_run_callback(c, q: CallbackQuery):
+    url = f"https://api.github.com/repos/{REPO_NAME}/actions/runs?event=workflow_dispatch"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
     try:
-        desk_msg = await asyncio.wait_for(
-            app_instance.send_document(
-                chat_id=DESK_CHANNEL_ID, document=file_path, caption=f"📁 Logs Backup: {caption}",
-                progress=progress_callback, progress_args=(app_instance, "manga_upload")
-            ), timeout=1800
-        )
-        file_id = desk_msg.document.file_id
-    except Exception as e:
-        print(f"[DESK BACKUP UPLOAD ERROR] {e}")
+        r = await asyncio.to_thread(requests.get, url, headers=headers)
+        if r.status_code == 200:
+            runs = r.json().get("workflow_runs", [])
+            cancelled = False
+            for run in runs:
+                if run["status"] in ["in_progress", "queued"]:
+                    cancel_url = f"https://api.github.com/repos/{REPO_NAME}/actions/runs/{run['id']}/cancel"
+                    await asyncio.to_thread(requests.post, cancel_url, headers=headers)
+                    cancelled = True
+            if cancelled:
+                await q.message.edit("🛑 **Task Cancelled!** Github Runner aborted successfully.")
+                await q.answer("Task Aborted", show_alert=True)
+            else: await q.answer("No active task found. (Pehle se cancel ho chuka hai)", show_alert=True)
+        else: await q.answer("GitHub API error.", show_alert=True)
+    except Exception as e: await q.answer(f"Abort Exception: {e}", show_alert=True)
 
-    # Stage 2: Direct PM Delivery to user chat
-    pm_msg = None
-    try:
-        if file_id:
-            pm_msg = await app_instance.send_document(chat_id=target_user, document=file_id, caption=caption)
+@app.on_callback_query()
+async def cbs(c, q: CallbackQuery):
+    data = q.data
+    uid = q.from_user.id
+    if data == "cancel_active_run": return
+
+    if data.startswith("p_"):
+        _, p_idx, t_id = data.split("_", 2)
+        if t_id not in pending_tasks: return await q.answer("Task Expired!", show_alert=True)
+        if p_idx != "default": pending_tasks[t_id]["prompt"] = user_prompts[uid][int(p_idx)]["text"]
+
+        kb = [
+            [InlineKeyboardButton("1️⃣ Standard Clean (Default)", callback_data=f"s_style1_{t_id}")],
+            [InlineKeyboardButton("2️⃣ Bold Outline (Action)", callback_data=f"s_style2_{t_id}")],
+            [InlineKeyboardButton("3️⃣ Soft Manga (Light)", callback_data=f"s_style3_{t_id}")]
+        ]
+        await q.message.edit("🎨 **Step 2: Choose Text Style**", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif data.startswith("s_"):
+        _, style, t_id = data.split("_", 2)
+        if t_id not in pending_tasks: return
+        t = pending_tasks[t_id]
+        
+        await q.message.edit("🚀 **Dispatching Task to GitHub Worker...**")
+        url = f"https://api.github.com/repos/{REPO_NAME}/actions/workflows/manga.yml/dispatches"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        
+        # PASSWORD REMOVED FROM PAYLOAD
+        payload = {
+            "ref": "main",
+            "inputs": {
+                "file_id": t["file_id"], "chat_id": str(t["cid"]), "msg_id": str(q.message.id),
+                "user_id": str(uid), "lang": t["lang"], "prompt": t["prompt"], "style": style, "fname": t["fname"]
+            }
+        }
+        r = requests.post(url, headers=headers, json=payload)
+        
+        if r.status_code == 204:
+            cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Skip / Cancel", callback_data="cancel_active_run")]])
+            await q.message.edit("🚀 **Task Queued in GitHub!**\n⚡ *Live Progress Bar Starting...*", reply_markup=cancel_kb)
         else:
-            reset_prog()
-            pm_msg = await asyncio.wait_for(
-                app_instance.send_document(
-                    chat_id=target_user, document=file_path, caption=caption,
-                    progress=progress_callback, progress_args=(app_instance, "manga_upload")
-                ), timeout=1800
-            )
-    except Exception as e_pm:
-        print(f"[USER PM DELIVERY ERROR] {e_pm}")
-        if not pm_msg:
-            try:
-                # Direct tagging fallback inside group if user hasn't start bot in PM
-                await app_instance.send_message(
-                    chat_id, 
-                    text=f"⚠️ <a href='tg://user?id={target_user}'>User</a>, manga process ho chuki hai par PM me nahi bhej paaya! Bot ko private me Start karein.", 
-                    parse_mode=ParseMode.HTML
-                )
-            except: pass
+            await q.message.edit(f"❌ **GitHub Worker Dispatch Failed:**\n`{r.text}`")
+        del pending_tasks[t_id]
 
-    return pm_msg or desk_msg
+flask_app = Flask(__name__)
+@flask_app.route('/')
+def home(): return "Manga HF Frontend Running!"
 
-async def worker_core():
-    # ================= PHASE 1: DIRECT HIGH-SPEED DOWNLOAD =================
-    app_down = Client("worker_down", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
-    await app_down.start()
-    
-    reset_prog()
-    os.makedirs("./manga-image-translator/input_folder", exist_ok=True)
-    dl_path = f"./manga-image-translator/input_{USER_ID}.{EXT}"
-    
-    await app_down.download_media(FILE_ID, file_name=dl_path, progress=prog, progress_args=(app_down, "manga_download"))
-    await app_down.stop() # Client stopped cleanly! System decoupled from Telegram limits.
-
-    # ================= PHASE 2: PROCESSING TRANSLATION (DETACHED) =================
-    os.chdir("manga-image-translator")
-    process_target = f"input_{USER_ID}.{EXT}"
-    is_zip = EXT in ['zip', 'cbz']
-    
-    if is_zip:
-        shutil.unpack_archive(process_target, "input_folder")
-        process_target = "input_folder"
-
-    img_files = []
-    if os.path.isdir(process_target):
-        for root, _, files in os.walk(process_target):
-            for f in files:
-                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    img_files.append(os.path.join(root, f))
-        total_pages = len(img_files) if img_files else 1
-    else:
-        total_pages = 1
-
-    # Clean legacy arguments matching standard original clone parameter keys
-    target_lang_code = "HIN" if LANG == "hienglish" else "ENG"
-    cmd = [
-        "python", "-m", "manga_translator", "-i", process_target, 
-        "--translator", "google", "--target-lang", target_lang_code, "--use-cuda", "False"
-    ]
-    if STYLE == "style2": cmd.extend(["--font-size", "28", "--text-color", "black", "--outline-color", "white"])
-    elif STYLE == "style3": cmd.extend(["--font-size", "22"])
-
-    out_target = f"{process_target}_translated"
-
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-    
-    start_time_proc = time.time()
-    last_edit = time.time()
-    current_log = "Initializing Models..."
-    
-    # Logs tracking buffer to output compiler error messages if translation fails
-    log_history = []
-    
+def keep_alive():
     while True:
-        try:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if process.returncode is not None: break
-            continue
-        
-        if not line: break
-            
-        decoded = line.decode('utf-8', errors='ignore').strip()
-        if decoded:
-            log_history.append(decoded)
-            if len(log_history) > 100:
-                log_history.pop(0) # Retain last 100 log items
-                
-            if "100%" not in decoded:
-                if "download" in decoded.lower(): current_log = "Downloading AI Models..."
-                elif "detecting" in decoded.lower(): current_log = "Detecting Text Bubbles..."
-                elif "translating" in decoded.lower(): current_log = "Translating text..."
-                else: current_log = decoded[:40] + "..."
-            
-        now = time.time()
-        if now - last_edit > 4:
-            translated_files = 0
-            if os.path.exists(out_target):
-                for root, _, files in os.walk(out_target):
-                    for f in files:
-                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                            translated_files += 1
-            
-            percent = min((translated_files / total_pages) * 100, 100.0) if total_pages > 0 else 0
-            elapsed = now - start_time_proc
-            speed_ppm = (translated_files / elapsed) * 60 if elapsed > 0 else 0
-            
-            bar = get_process_bar(percent)
-            text = f"⚙️ **Translation Engine Active**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_ppm:.1f} Pgs/min`\n📄 `{translated_files} / {total_pages} Pages Done`\n\n📝 **Log:** `{current_log}`"
-            await update_http_status(text)
-            last_edit = now
-            
-    await process.wait()
-
-    # Capture and dump exact engine console logs to Telegram if directory is not found
-    if not os.path.exists(out_target):
-        joined_logs = "\n".join(log_history[-25:])
-        raise FileNotFoundError(
-            f"Manga translation output target folder was not found.\n\n"
-            f"**Exit Code:** `{process.returncode}`\n\n"
-            f"**Last Translation Logs Output:**\n<code>{html.escape(joined_logs)}</code>"
-        )
-
-    await update_http_status("🗜️ **Optimizing Translated Manga Layouts...**")
-    optimize_images(out_target)
-
-    if is_zip:
-        final_file = f"Translated_{FNAME}"
-        subprocess.run(["zip", "-r", "-q", final_file, out_target])
-    else:
-        files = os.listdir(out_target)
-        final_file = f"{out_target}/{files[0]}" if files else process_target
-
-    # ================= PHASE 3: DIRECT HIGH-SPEED UPLOAD =================
-    app_up = Client("worker_up", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
-    await app_up.start()
-    
-    await update_http_status(f"📤 **Uploading Manga Backup to logs...**\n{get_send_bar(0)} [0.0%]")
-    
-    # Safe delivery adapters
-    await deliver_manga_asset(app_up, CHAT_ID, USER_ID, final_file, f"✅ Successful\n`{FNAME}`", prog)
-
-    try:
-        await app_up.delete_messages(CHAT_ID, status_msg_id)
-        if CHAT_ID != USER_ID:
-            await app_up.send_message(CHAT_ID, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={USER_ID}'>User</a>. File delivered in PM.", parse_mode=pyrogram.enums.ParseMode.HTML)
-    except: pass
-    await app_up.stop()
-
-async def main():
-    try:
-        await worker_core()
-    except Exception as e:
-        tb = traceback.format_exc()
-        err_text = f"❌ **Workflow Execution Error:**\n<code>{html.escape(str(e))}</code>\n\n**Traceback:**\n<code>{html.escape(tb[-800:])}</code>"
-        try: _sync_http_edit(err_text)
+        try: requests.get("http://127.0.0.1:7860")
         except: pass
+        time.sleep(300)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=7860, use_reloader=False), daemon=True).start()
+    app.run()
