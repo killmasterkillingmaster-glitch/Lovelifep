@@ -1,4 +1,4 @@
-name: Manga Fast Worker
+Entername: Manga Fast Worker
 
 on:
   workflow_dispatch:
@@ -52,11 +52,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # 1. Super-light CPU PyTorch first (Saves 2.5 GB of download space & time!)
+          # 1. Light PyTorch install first
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # 2. Install translation core requirements
+          # 2. Translation core requirements
           pip install -r manga-image-translator/requirements.txt
-          # 3. Utility packages
+          # 3. Utilities
           pip install pyrogram tgcrypto Pillow anyascii pymupdf
 
       - name: Run Fast Speed Worker
@@ -65,7 +65,14 @@ jobs:
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
-          INPUTS: ${{ toJSON(github.event.inputs) }}
+          FILE_ID: ${{ github.event.inputs.file_id }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          MSG_ID: ${{ github.event.inputs.msg_id }}
+          USER_ID: ${{ github.event.inputs.user_id }}
+          LANG: ${{ github.event.inputs.lang }}
+          PROMPT: ${{ github.event.inputs.prompt }}
+          STYLE: ${{ github.event.inputs.style }}
+          FNAME: ${{ github.event.inputs.fname }}
           PYTHONUNBUFFERED: "1"
         run: python worker.py
       
