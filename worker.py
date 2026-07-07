@@ -1,32 +1,15 @@
-import os, json, subprocess, time, shutil
-
-# --- PYROGRAM ID BUG FIX PATCH ---
-import pyrogram.utils
-pyrogram.utils.MIN_CHAT_ID = -999999999999
-pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
-
-def get_peer_type_new(peer_id: int) -> str:
-    peer_id_str = str(peer_id)
-    if not peer_id_str.startswith("-"):
-        return "user"
-    elif peer_id_str.startswith("-100"):
-        return "channel"
-    else:
-        return "chat"
-
-pyrogram.utils.get_peer_type = get_peer_type_new
-# ---------------------------------
-
+import os, json, subprocess, time, asyncio, shutil
 from pyrogram import Client
+from PIL import Image # For Auto Resizing
 
 # Configurations
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-DESK_CHANNEL_ID = -1003974162679 # Hardcoded Desk Channel
+DESK_CHANNEL_ID = -1003974162679 # Manga Desk Channel
 INPUTS = json.loads(os.environ["INPUTS"])
 
-# Pyrogram Client initialized with HIGH SPEED settings
+# Pyrogram Fast Client
 app = Client(
     "worker_session", 
     api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, 
@@ -36,36 +19,63 @@ app = Client(
 
 last_time = 0
 
-# --- LIVE PROGRESS BAR UI ---
+# --- PROGRESS BAR STYLES (FROM HARDSUB BOT) ---
 def get_download_bar(percent):
-    filled = int(percent / 100 * 15)
-    return f"[{'>' * filled}{'-' * (15 - filled)}]"
+    total = 20
+    filled = int(percent / 100 * total)
+    return f"[{'>' * filled}{'-' * (total - filled)}]"
+
+def get_process_bar(percent):
+    total = 20
+    filled = int(percent / 100 * total)
+    seq = ["•", "°", ":", "°", "•", ":"]
+    bar = "".join(seq[i % len(seq)] for i in range(filled))
+    return f"[{bar}{'-' * (total - filled)}]"
 
 def get_send_bar(percent):
-    filled = int(percent / 100 * 15)
-    return f"[{'▓' * filled}{'░' * (15 - filled)}]"
-
-def get_process_bar():
-    return "[•°:°•:----]"
+    total = 20
+    filled = int(percent / 100 * total)
+    return f"[{'▓' * filled}{'▒' * (total - filled)}]"
 
 async def progress_tracker(current, total, c_id, m_id, action_type):
     global last_time
     now = time.time()
     if now - last_time > 5 or current == total:
         percent = (current / total) * 100 if total > 0 else 0
-        speed = (current / 1048576) / (now - last_time + 0.1) if last_time > 0 else 0
+        speed_mb = ((current / 1048576) / (now - last_time + 0.1)) if last_time > 0 else 0
         
         if action_type == "download":
             bar = get_download_bar(percent)
-            text = f"📥 **Fast Downloading...**\n{bar} [{percent:.0f}%]\n🚀 Speed: `Max` | 📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+            text = f"📥 **Downloading File...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
         else:
             bar = get_send_bar(percent)
-            text = f"📤 **Fast Uploading...**\n{bar} [{percent:.0f}%]\n🚀 Speed: `Max` | 📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+            text = f"📤 **Uploading Manga...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
             
-        try:
-            await app.edit_message_text(c_id, m_id, text)
+        try: await app.edit_message_text(c_id, m_id, text)
         except: pass
         last_time = now
+
+# --- AUTO RESIZE & COMPRESS IMAGE ---
+def optimize_images(directory):
+    print("Optimizing and Resizing images...")
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                file_path = os.path.join(root, file)
+                try:
+                    img = Image.open(file_path)
+                    if img.mode in ("RGBA", "P"): img = img.convert("RGB")
+                    
+                    # Auto Resize logic if image is too large (Width > 1500)
+                    if img.width > 1500:
+                        ratio = 1500 / img.width
+                        new_h = int(img.height * ratio)
+                        img = img.resize((1500, new_h), Image.LANCZOS)
+                        
+                    # Save with High compression but good quality
+                    img.save(file_path, "JPEG", optimize=True, quality=80)
+                except Exception as e:
+                    print(f"Error optimizing {file}: {e}")
 
 async def main():
     async with app:
@@ -79,13 +89,13 @@ async def main():
         global last_time
         last_time = time.time()
         
-        # STEP 1: FAST DOWNLOAD
+        # 1. FAST DOWNLOAD
         os.makedirs("./manga-image-translator/input_folder", exist_ok=True)
         dl_path = f"./manga-image-translator/input_{u_id}.{ext}"
         
         await app.download_media(INPUTS["file_id"], file_name=dl_path, progress=progress_tracker, progress_args=(c_id, m_id, "download"))
 
-        # Prepare for Translator (If Zip, unpack it)
+        # Setup translation target
         os.chdir("manga-image-translator")
         process_target = f"input_{u_id}.{ext}"
         is_zip = ext in ['zip', 'cbz']
@@ -93,8 +103,8 @@ async def main():
             shutil.unpack_archive(process_target, "input_folder")
             process_target = "input_folder"
 
-        # STEP 2: TRANSLATING
-        await app.edit_message_text(c_id, m_id, f"⚙️ **Processing Engine Active...**\n{get_process_bar()} [Translating]\n\n*Using Google AI without API limit...*")
+        # 2. TRANSLATION PROCESS
+        await app.edit_message_text(c_id, m_id, f"⚙️ **Translation Engine Active**\n{get_process_bar(50)} [Running]\n\n*Detecting bubbles, translating and typesetting...*")
         
         target_lang_code = "HIN" if lang == "hienglish" else "ENG"
         cmd = [
@@ -109,8 +119,13 @@ async def main():
 
         subprocess.run(cmd)
 
-        # Output preparation
+        # 3. AUTO RESIZE / COMPRESSION
         out_target = f"{process_target}_translated"
+        if os.path.exists(out_target):
+            await app.edit_message_text(c_id, m_id, f"🗜️ **Optimizing Manga Size...**\n{get_process_bar(90)} [Compressing]")
+            optimize_images(out_target)
+
+        # Output preparation
         if is_zip:
             final_file = f"Translated_{fname}"
             subprocess.run(["zip", "-r", final_file, out_target])
@@ -118,21 +133,25 @@ async def main():
             files = os.listdir(out_target)
             final_file = f"{out_target}/{files[0]}" if files else process_target
 
-        # STEP 3: FAST UPLOAD
+        # 4. FAST UPLOAD
         last_time = time.time()
         
-        # Delivery 1: DM to User
-        await app.send_document(chat_id=u_id, document=final_file, caption=f"✅ **Task Ready!**\n📄 `{fname}`")
-        
-        # Delivery 2: Desk Channel
-        await app.send_document(
+        # Desk Channel
+        desk_msg = await app.send_document(
             chat_id=DESK_CHANNEL_ID, document=final_file, 
-            caption=f"📁 **Backup File**\nUser: `{u_id}`\nFormat: `{ext}`",
+            caption=f"📁 **Logs Archive**\nUser: `{u_id}`\nFormat: `{ext}`",
             progress=progress_tracker, progress_args=(c_id, m_id, "upload")
         )
+        
+        # User PM
+        await app.send_document(chat_id=u_id, document=desk_msg.document.file_id, caption=f"✅ **Task Ready!**\n📄 `{fname}`")
 
-        # Clean Up Group Message
-        try: await app.delete_messages(c_id, m_id)
+        # 5. CLEANUP & GROUP NOTIFICATION
+        try:
+            await app.delete_messages(c_id, m_id)
+            # Group me final completion message
+            if c_id != u_id:
+                await app.send_message(c_id, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={u_id}'>User</a>. File delivered in PM.", parse_mode=pyrogram.enums.ParseMode.HTML)
         except: pass
 
 app.run(main())
