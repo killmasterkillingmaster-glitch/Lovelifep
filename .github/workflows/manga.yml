@@ -36,7 +36,7 @@ jobs:
           python -m pip install "cython<3.0.0"
           python -m pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git
 
-      # Optimized OpenCV and OpenGL dependencies compatible with modern Ubuntu 24.04
+      # Optimized OpenGL libraries for modern runners (Ubuntu 24.04 fallback compliant)
       - name: Install System Dependencies
         run: |
           sudo apt-get update
