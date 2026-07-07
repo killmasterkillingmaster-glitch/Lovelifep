@@ -58,9 +58,6 @@ LANG_MAP = {
     "arabic": "AR"
 }
 
-# Telegram Client
-app = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
 # ============ MULTI-KEY TRANSLATOR CLASS ============
 class MultiDeepLTranslator:
     """Multiple DeepL API keys with auto-failover"""
@@ -160,73 +157,81 @@ else:
 
 # ============ MAIN WORKER FUNCTION ============
 async def main():
-    async with app:
-        try:
-            # Step 1: Worker Started
+    # Create client without async context manager
+    app = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+    
+    try:
+        # Start the client
+        await app.start()
+        print("✅ Bot started!")
+        
+        # Step 1: Worker Started
+        await app.edit_message_text(
+            CHAT_ID, 
+            MSG_ID, 
+            "🔄 **Worker Started!**\n\n⏳ Processing your file..."
+        )
+        
+        # Step 2: Get file from safe channel
+        print(f"📥 Getting file: {FILE_ID}")
+        msg = await app.get_messages(-1003962165512, FILE_ID)  # SAFE_CHANNEL_ID
+        
+        if not msg:
             await app.edit_message_text(
                 CHAT_ID, 
                 MSG_ID, 
-                "🔄 **Worker Started!**\n\n⏳ Processing your file..."
+                "❌ **File not found in safe channel!**"
             )
-            
-            # Step 2: Get file from safe channel
-            print(f"📥 Getting file: {FILE_ID}")
-            msg = await app.get_messages(-1003962165512, FILE_ID)  # SAFE_CHANNEL_ID
-            
-            if not msg:
-                await app.edit_message_text(
-                    CHAT_ID, 
-                    MSG_ID, 
-                    "❌ **File not found in safe channel!**"
-                )
-                return
-            
-            # Step 3: Download file
+            await app.stop()
+            return
+        
+        # Step 3: Download file
+        await app.edit_message_text(
+            CHAT_ID, 
+            MSG_ID, 
+            f"📥 **Downloading:** `{FNAME}`"
+        )
+        
+        file_path = await app.download_media(msg)
+        
+        if not file_path:
             await app.edit_message_text(
                 CHAT_ID, 
                 MSG_ID, 
-                f"📥 **Downloading:** `{FNAME}`"
+                "❌ **Failed to download file!**"
             )
-            
-            file_path = await app.download_media(msg)
-            
-            if not file_path:
-                await app.edit_message_text(
-                    CHAT_ID, 
-                    MSG_ID, 
-                    "❌ **Failed to download file!**"
-                )
-                return
-            
-            print(f"✅ File downloaded: {file_path}")
-            
-            # Step 4: Translate sample text (for testing)
-            sample_text = "Hello, this is a manga translation test. The artwork is amazing!"
-            
-            # Count available keys
-            available_keys = len(DEEPL_KEYS)
-            key_status = f"✅ {available_keys} API keys available" if available_keys > 0 else "⚠️ No API keys available!"
-            
-            await app.edit_message_text(
-                CHAT_ID, 
-                MSG_ID, 
-                f"🌐 **Translating...**\n\n"
-                f"📂 File: `{FNAME}`\n"
-                f"🌍 Target Language: `{LANG}`\n"
-                f"🔑 {key_status}\n\n"
-                f"⏳ This may take a few seconds..."
-            )
-            
-            # Step 5: Perform translation
-            if translator:
-                translated_text, used_key = translator.translate_text(sample_text, LANG)
-                key_preview = used_key[:10] + "..." if used_key else "N/A"
-            else:
-                translated_text = "⚠️ No API key configured! Please add DEEPL_API_KEY"
-                key_preview = "N/A"
-            
-            # Step 6: Send result
-            result_msg = f"""✅ **Translation Complete!**
+            await app.stop()
+            return
+        
+        print(f"✅ File downloaded: {file_path}")
+        
+        # Step 4: Translate sample text (for testing)
+        sample_text = "Hello, this is a manga translation test. The artwork is amazing!"
+        
+        # Count available keys
+        available_keys = len(DEEPL_KEYS)
+        key_status = f"✅ {available_keys} API keys available" if available_keys > 0 else "⚠️ No API keys available!"
+        
+        await app.edit_message_text(
+            CHAT_ID, 
+            MSG_ID, 
+            f"🌐 **Translating...**\n\n"
+            f"📂 File: `{FNAME}`\n"
+            f"🌍 Target Language: `{LANG}`\n"
+            f"🔑 {key_status}\n\n"
+            f"⏳ This may take a few seconds..."
+        )
+        
+        # Step 5: Perform translation
+        if translator:
+            translated_text, used_key = translator.translate_text(sample_text, LANG)
+            key_preview = used_key[:10] + "..." if used_key else "N/A"
+        else:
+            translated_text = "⚠️ No API key configured! Please add DEEPL_API_KEY"
+            key_preview = "N/A"
+        
+        # Step 6: Send result
+        result_msg = f"""✅ **Translation Complete!**
 
 📂 **File:** `{FNAME}`
 🌐 **Target Language:** `{LANG}`
@@ -243,26 +248,30 @@ async def main():
 
 💡 _Full file translation will be available in the next update._"""
 
-            await app.edit_message_text(CHAT_ID, MSG_ID, result_msg)
-            
-            # Step 7: Send the file back
-            await app.send_document(
-                CHAT_ID,
-                file_path,
-                caption=f"📤 **Processed File:** {FNAME}\n\n🌐 Language: `{LANG}`\n🔑 Used Key: `{key_preview}`"
-            )
-            
-            # Step 8: Cleanup
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                print(f"🧹 Cleaned up: {file_path}")
-            
-            print("✅ Worker completed successfully!")
-            
-        except Exception as e:
-            error_msg = str(e)
-            print(f"❌ Error: {error_msg}")
-            
+        await app.edit_message_text(CHAT_ID, MSG_ID, result_msg)
+        
+        # Step 7: Send the file back
+        await app.send_document(
+            CHAT_ID,
+            file_path,
+            caption=f"📤 **Processed File:** {FNAME}\n\n🌐 Language: `{LANG}`\n🔑 Used Key: `{key_preview}`"
+        )
+        
+        # Step 8: Cleanup
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"🧹 Cleaned up: {file_path}")
+        
+        print("✅ Worker completed successfully!")
+        
+        # Stop the client
+        await app.stop()
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"❌ Error: {error_msg}")
+        
+        try:
             await app.edit_message_text(
                 CHAT_ID, 
                 MSG_ID, 
@@ -272,6 +281,10 @@ async def main():
                 f"• Check API key has quota left\n"
                 f"• Try again after some time"
             )
+        except:
+            pass
+        
+        await app.stop()
 
 # ============ RUN WORKER ============
 if __name__ == "__main__":
