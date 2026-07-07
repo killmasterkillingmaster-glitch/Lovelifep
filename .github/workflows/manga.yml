@@ -1,4 +1,4 @@
-Entername: Manga Fast Worker
+name: Manga Fast Worker
 
 on:
   workflow_dispatch:
