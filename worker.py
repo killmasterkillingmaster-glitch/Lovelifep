@@ -1,3 +1,4 @@
+# worker.py
 import os
 import sys
 import zipfile
@@ -9,7 +10,7 @@ from pyrogram import Client
 import pyrogram.utils
 pyrogram.utils.get_peer_type = lambda p: "channel" if str(p).startswith("-100") else "chat" if str(p).startswith("-") else "user"
 
-# Flat environment variables load karein (No JSON dependency)
+# Flat environment variables (Passed directly from manga.yml)
 FILE_ID = os.getenv("FILE_ID", "").strip()
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 MSG_ID = int(os.getenv("MSG_ID", "0"))
@@ -26,22 +27,19 @@ DEEPL_KEY = os.getenv("DEEPL_API_KEY", "").strip()
 
 SAFE_CHANNEL_ID = -1003962165512
 
-print("=== STARTING MANGA WORKER ===")
+print("=== STARTING REAL MANGA WORKER ===")
 print(f"FILE_ID: {FILE_ID}")
 print(f"CHAT_ID: {CHAT_ID}")
 print(f"MSG_ID: {MSG_ID}")
 print(f"LANG: {LANG}")
 print(f"STYLE: {STYLE}")
 
-# Credentials verify karein
 if API_ID == 0 or not API_HASH or not BOT_TOKEN:
-    print("❌ CRITICAL ERROR: Credentials (API_ID, API_HASH, BOT_TOKEN) are missing or 0!")
+    print("❌ CRITICAL ERROR: Credentials (API_ID, API_HASH, BOT_TOKEN) are missing in GitHub secrets!")
 
-# Bind DeepL Auth Key
 if DEEPL_KEY:
     os.environ["DEEPL_AUTH_KEY"] = DEEPL_KEY
 
-# Set state for romanized Hindi transliterator
 if LANG == "hienglish":
     os.environ["TRANSLITERATE_TO_ROMAN_HINDI"] = "1"
 else:
@@ -49,8 +47,8 @@ else:
 
 def patch_translator():
     """
-    Translators folder ke common.py ko patch karega taaki 
-    Devanagari Hindi automatically Roman (Hinglish) me convert ho jaye.
+    Translators folder ke common.py ko patch karega taaki Devanagari Hindi translation 
+    render hone se pehle Roman script (Hinglish) me convert ho sake.
     """
     paths = [
         "manga-image-translator/manga_translator/translators/common.py",
@@ -85,7 +83,7 @@ def patch_translator():
 
 def force_format(src_path, dest_ext):
     """
-    Ek image format ko dusre image format me force-convert karta hai (e.g. PNG to JPG)
+    Image formats ko force convert karta hai formats balance rakhne ke liye.
     """
     current_ext = os.path.splitext(src_path)[1].lower()
     if current_ext == dest_ext:
@@ -113,38 +111,38 @@ def make_progress_bar(current, total, length=10):
 
 async def main():
     if not FILE_ID or not CHAT_ID or not MSG_ID:
-        print("❌ CRITICAL ERROR: Required dispatch variables are empty.")
+        print("❌ CRITICAL ERROR: Dispatch variables are missing.")
         return
 
-    # Patch translator script
+    # Apply translation dynamic hooks
     patch_translator()
 
-    # no_updates=True prevents conflict with Hugging Face Space
+    # no_updates=True makes sure it runs peacefully without clashes
     bot = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, no_updates=True)
     await bot.start()
 
-    # --- CHAT RESOLUTION (PEER_ID_INVALID FIX) ---
-    print("🔄 Resolving chat channels to prevent PeerIdInvalid...")
+    # Dynamic Chat Hash Resolution (PeerIdInvalid protection)
+    print("🔄 Resolving target peers to load active hashes...")
     try:
         await bot.get_chat(SAFE_CHANNEL_ID)
         await bot.get_chat(CHAT_ID)
-        print("✅ Chats resolved successfully!")
+        print("✅ Channels resolved successfully!")
     except Exception as e:
-        print(f"⚠️ Resolution warning: {e}")
+        print(f"⚠️ Resolution log: {e}")
 
     async def update_status(text):
         try:
-            print(f"[STATUS UPDATE]: {text}")
+            print(f"[PROGRESS STATUS]: {text}")
             await bot.edit_message_text(chat_id=CHAT_ID, message_id=MSG_ID, text=text)
         except Exception as e:
-            print(f"❌ Failed to edit status message: {e}")
+            print(f"❌ Failed to edit status: {e}")
 
     await update_status("⏳ **Worker Initialized:** Downloading document...")
     
     try:
-        print("Downloading media from safe channel...")
+        print("Downloading media...")
         download_path = await bot.download_media(FILE_ID)
-        print(f"Downloaded media path: {download_path}")
+        print(f"Successfully downloaded to: {download_path}")
     except Exception as e:
         await update_status(f"❌ **Download Error:** Failed to fetch from safe channel.\n`{e}`")
         await bot.stop()
@@ -165,7 +163,7 @@ async def main():
 
     pages = []
     
-    await update_status(f"📦 **Analyzing:** Detecting format `{original_ext}`...")
+    await update_status(f"📦 **Analyzing:** Processing `{original_ext}` format...")
 
     if original_ext in [".zip", ".cbz"]:
         try:
@@ -177,7 +175,7 @@ async def main():
                         pages.append(os.path.join(root, f))
             pages.sort()
         except Exception as e:
-            await update_status(f"❌ **Unpack Error:** File is not a valid zip archive.\n`{e}`")
+            await update_status(f"❌ **ZIP Unpack Error:** Failed to unzip.\n`{e}`")
             await bot.stop()
             return
             
@@ -197,6 +195,7 @@ async def main():
             await bot.stop()
             return
     else:
+        # Single image format
         shutil.copy(download_path, input_dir)
         for f in os.listdir(input_dir):
             if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
@@ -204,7 +203,7 @@ async def main():
 
     total_pages = len(pages)
     if total_pages == 0:
-        await update_status("❌ **Error:** No supported image assets found in document.")
+        await update_status("❌ **Error:** No readable image panels found inside the file.")
         await bot.stop()
         return
 
@@ -220,7 +219,7 @@ async def main():
     for idx, page_path in enumerate(pages):
         current_page = idx + 1
         pbar = make_progress_bar(idx, total_pages)
-        await update_status(f"🔄 **Translating ({idx}/{total_pages}):** Processing page {current_page}...\n{pbar}\n⚡ *Active Fast Runner*")
+        await update_status(f"🔄 **Translating ({idx}/{total_pages}):** Processing panel {current_page}...\n{pbar}\n⚡ *Active Speed Runner*")
 
         rel_path = os.path.relpath(page_path, input_dir)
         out_page_path = os.path.join(output_dir, rel_path)
@@ -235,7 +234,6 @@ async def main():
         ] + style_flags
 
         try:
-            print(f"Running translator for page {current_page}...")
             cwd_dir = "manga-image-translator" if os.path.exists("manga-image-translator") else None
             process = await asyncio.create_subprocess_exec(
                 *cli_cmd,
@@ -245,7 +243,7 @@ async def main():
             )
             stdout, stderr = await process.communicate()
             if process.returncode != 0:
-                print(f"Error on page {current_page}: {stderr.decode('utf-8', errors='ignore')}")
+                print(f"Error on panel {current_page}: {stderr.decode('utf-8', errors='ignore')}")
                 shutil.copy(page_path, out_page_path)
         except Exception as e:
             print(f"Exception on page {current_page}: {e}")
@@ -253,7 +251,7 @@ async def main():
 
         translated_files.append(out_page_path)
 
-    await update_status(f"🎨 **Compiling Output:** Building target document...")
+    await update_status(f"🎨 **Structuring Output:** Wrapping up final document...")
 
     output_file_to_send = ""
 
@@ -283,12 +281,12 @@ async def main():
                 img = Image.open(f).convert('RGB')
                 pil_images.append(img)
             except Exception as e:
-                print(f"Error opening image {f}: {e}")
+                print(f"Error compiling image {f}: {e}")
                 
         if pil_images:
             pil_images[0].save(output_pdf, save_all=True, append_images=pil_images[1:])
         else:
-            await update_status("❌ **PDF Generation Error:** No pages available.")
+            await update_status("❌ **PDF Rebuild Error:** No translated panels compiled.")
             await bot.stop()
             return
     else:
@@ -297,19 +295,18 @@ async def main():
         else:
             output_file_to_send = download_path
 
-    await update_status("📤 **Uploading:** Sending document to chat...")
+    await update_status("📤 **Uploading:** Delivering file to Telegram...")
     try:
-        print("Sending document back via Pyrogram...")
         await bot.send_document(
             chat_id=CHAT_ID,
             document=output_file_to_send,
-            caption=f"✅ **Translation Finished!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
+            caption=f"✅ **Translation Completed!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
         )
-        print("Successfully sent document! Deleting status message...")
+        print("Success! Deleting progress message.")
         await bot.delete_messages(chat_id=CHAT_ID, message_ids=MSG_ID)
     except Exception as e:
         print(f"❌ Upload failed: {e}")
-        await update_status(f"❌ **Upload Error:** Failed to dispatch output.\n`{e}`")
+        await update_status(f"❌ **Upload Error:** Failed to send output back.\n`{e}`")
 
     try:
         shutil.rmtree(workspace)
@@ -323,4 +320,4 @@ async def main():
     await bot.stop()
 
 if __name__ == "__main__":
-    asyncio.run)
+    asyncio.run(main())
