@@ -9,20 +9,10 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 DESK_CHANNEL_ID = -1003974162679
 INPUTS = json.loads(os.environ["INPUTS"])
 
-app = Client(
-    "worker_session", 
-    api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, 
-    max_concurrent_transmissions=10, 
-    in_memory=True
-)
+app = Client("worker_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=10, in_memory=True)
 
 last_time = 0
 cancel_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Skip / Cancel", callback_data="cancel_active_run")]])
-
-def get_download_bar(percent):
-    total = 20
-    filled = int(percent / 100 * total)
-    return f"[{'>' * filled}{'-' * (total - filled)}]"
 
 def get_process_bar(percent):
     total = 20
@@ -38,10 +28,12 @@ async def progress_tracker(current, total, c_id, m_id, action_type):
         percent = (current / total) * 100 if total > 0 else 0
         speed_mb = ((current / 1048576) / (now - last_time + 0.1)) if last_time > 0 else 0
         
+        bar = f"[{'>' * int(percent / 100 * 20)}{'-' * (20 - int(percent / 100 * 20))}]"
+        
         if action_type == "download":
-            text = f"📥 **Downloading File...**\n{get_download_bar(percent)} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+            text = f"📥 **Downloading File...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
         else:
-            text = f"📤 **Uploading Manga...**\n{get_download_bar(percent)} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+            text = f"📤 **Uploading Manga...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
             
         try: await app.edit_message_text(c_id, m_id, text, reply_markup=cancel_markup)
         except: pass
@@ -93,13 +85,10 @@ async def main():
             total_pages = 1
 
         target_lang_code = "HIN" if lang == "hienglish" else "ENG"
-        
-        # FIX: Removed '--use-cuda' 'False' completely so it uses CPU safely without error
         cmd = [
             "python", "-m", "manga_translator", "-i", process_target, 
-            "--translator", "google", "--target-lang", target_lang_code
+            "--translator", "google", "--target-lang", target_lang_code, "--use-cuda", "False"
         ]
-        
         if INPUTS['style'] == "style2": cmd.extend(["--font-size", "28", "--text-color", "black", "--outline-color", "white"])
         elif INPUTS['style'] == "style3": cmd.extend(["--font-size", "22"])
 
@@ -143,9 +132,15 @@ async def main():
         
         await process.wait()
 
-        if os.path.exists(out_target):
-            await app.edit_message_text(c_id, m_id, f"🗜️ **Optimizing Manga Size...**\n{get_process_bar(100)} [Compressing]")
-            optimize_images(out_target)
+        # ======== CRASH PROTECTOR (Yeh bot ko atakne se bachayega) ========
+        if not os.path.exists(out_target):
+            error_text = f"❌ **Task Failed!**\nGitHub Worker crashed during translation. (Could be a model download timeout or image error)."
+            await app.edit_message_text(c_id, m_id, error_text)
+            return  # Stop here, don't try to zip or upload
+        # ===================================================================
+
+        await app.edit_message_text(c_id, m_id, f"🗜️ **Optimizing Manga Size...**\n{get_process_bar(100)} [Compressing]")
+        optimize_images(out_target)
 
         if is_zip:
             final_file = f"Translated_{fname}"
