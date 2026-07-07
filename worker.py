@@ -21,7 +21,6 @@ pyrogram.utils.get_peer_type = lambda p: "channel" if str(p).startswith("-100") 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DISPATCH_PASSWORD = os.getenv("DISPATCH_PASSWORD")
 
 INPUTS_RAW = os.getenv("INPUTS")
 if not INPUTS_RAW:
@@ -133,29 +132,20 @@ def optimize_images(directory):
                 except: pass
 
 async def worker_core():
-    # Password verification validation
-    provided_password = INPUTS.get("password")
-    if DISPATCH_PASSWORD and provided_password != DISPATCH_PASSWORD:
-        raise PermissionError("Security Check Failed: Dispatch passwords do not match.")
-
     # ================= PHASE 1: DIRECT HIGH-SPEED DOWNLOAD =================
     app_down = Client("worker_down", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
+    await app_down.start()
     
-    async with app_down:
-        global last_time
-        last_time = time.time()
-        
-        os.makedirs("./manga-image-translator/input_folder", exist_ok=True)
-        dl_path = f"./manga-image-translator/input_{u_id}.{ext}"
-        
-        await app_down.download_media(
-            FILE_ID, file_name=dl_path, progress=prog, progress_args=(app_down, "manga_download")
-        )
-    # Client stopped cleanly! System decoupled from Telegram limits.
+    reset_prog()
+    os.makedirs("./manga-image-translator/input_folder", exist_ok=True)
+    dl_path = f"./manga-image-translator/input_{USER_ID}.{EXT}"
+    
+    await app_down.download_media(FILE_ID, file_name=dl_path, progress=prog, progress_args=(app_down, "manga_download"))
+    await app_down.stop() # Client stopped cleanly! System decoupled from Telegram limits.
 
     # ================= PHASE 2: PROCESSING TRANSLATION (DETACHED) =================
     os.chdir("manga-image-translator")
-    process_target = f"input_{u_id}.{EXT}"
+    process_target = f"input_{USER_ID}.{EXT}"
     is_zip = EXT in ['zip', 'cbz']
     
     if is_zip:
@@ -258,7 +248,7 @@ async def worker_core():
     try:
         await app_up.delete_messages(CHAT_ID, status_msg_id)
         if CHAT_ID != USER_ID:
-            await app_up.send_message(CHAT_ID, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={USER_ID}'>User</a>. File delivered in PM.", parse_mode=pyrogram.enums.ParseMode.HTML)
+            await app_up.send_message(CHAT_ID, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={USER_ID}'>User</a>. File delivered in PM.", parse_mode=ParseMode.HTML)
     except: pass
     await app_up.stop()
 
