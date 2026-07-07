@@ -1,4 +1,4 @@
-Entername: Manga Fast Worker
+name: Manga Fast Worker
 run-name: "MangaSub [Chat: ${{ inputs.chat_id }}] [User: ${{ inputs.user_id }}] [Msg: ${{ inputs.msg_id }}]"
 
 on:
@@ -31,7 +31,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
 
-      # Crucial: Pre-compile pydensecrf using Cython v0.29.x to bypass Python 3.10 wheel compilation bugs
+      # Compile pydensecrf using Cython v0.29.x to bypass Python 3.10 wheel compilation bugs
       - name: Install pydensecrf with Cython Fix
         run: |
           python -m pip install "cython<3.0.0"
