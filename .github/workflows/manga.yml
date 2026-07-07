@@ -16,58 +16,42 @@ on:
 jobs:
   translation_job:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360  # ✅ Max time
     steps:
-      # 1. FIX: Free up Disk Space & Add SWAP RAM (To prevent Auto-Delete/Crash)
-      - name: Free Disk Space & Add RAM
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
-
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Security Check
         run: |
           if [ "${{ github.event.inputs.password }}" != "${{ secrets.RECONNECT1234555 }}" ]; then
-            echo "Security Breach!"
+            echo "❌ Security Breach!"
             exit 1
           fi
-
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 zip
+          echo "✅ Connection Secured!"
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with: 
           python-version: '3.10'
 
-      # 2. FIX: Install CPU-Only PyTorch to save RAM and prevent crashes
-      - name: Install Dependencies & CPU PyTorch
+      - name: Free Disk Space
         run: |
-          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          df -h
+
+      - name: Install Dependencies
+        run: |
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
-          pip install -r requirements.txt
-          pip install pyrogram tgcrypto Pillow
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir pyrogram tgcrypto Pillow
 
-      - name: Run Fast Speed Worker
+      - name: Run Worker with Logging
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           INPUTS: ${{ toJSON(github.event.inputs) }}
-          PYTHONUNBUFFERED: "1"
-        run: python worker.py
-      
-      - name: Cleanup
-        if: always()
-        run: rm -rf *
+          PYTHONUNBUFFERED: 1
+        run: |
+          python worker.py 2>&1 | tee -a workflow.log
