@@ -1,83 +1,72 @@
-import os, json, subprocess, time, asyncio, shutil
+import os
+import json
+import subprocess
+import time
+import asyncio
+import shutil
+import fitz  # PyMuPDF (Ultra fast in-memory PDF handling)
 from pyrogram import Client
-from PIL import Image # For Auto Resizing
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from PIL import Image
 
-# Configurations
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-DESK_CHANNEL_ID = -1003974162679 # Manga Desk Channel
+DESK_CHANNEL_ID = -1003974162679
 INPUTS = json.loads(os.environ["INPUTS"])
 
-# Pyrogram Fast Client
-app = Client(
-    "worker_session", 
-    api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, 
-    max_concurrent_transmissions=10, 
-    in_memory=True
-)
+app = Client("worker_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=10, in_memory=True)
 
 last_time = 0
-
-# --- PROGRESS BAR STYLES (FROM HARDSUB BOT) ---
-def get_download_bar(percent):
-    total = 20
-    filled = int(percent / 100 * total)
-    return f"[{'>' * filled}{'-' * (total - filled)}]"
+cancel_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Skip / Cancel", callback_data="cancel_active_run")]])
 
 def get_process_bar(percent):
     total = 20
     filled = int(percent / 100 * total)
-    seq = ["•", "°", ":", "°", "•", ":"]
-    bar = "".join(seq[i % len(seq)] for i in range(filled))
-    return f"[{bar}{'-' * (total - filled)}]"
-
-def get_send_bar(percent):
-    total = 20
-    filled = int(percent / 100 * total)
-    return f"[{'▓' * filled}{'▒' * (total - filled)}]"
+    bar = "█" * filled + "░" * (total - filled)
+    return f"[{bar}]"
 
 async def progress_tracker(current, total, c_id, m_id, action_type):
     global last_time
     now = time.time()
-    if now - last_time > 5 or current == total:
+    # Optimized update rate to prevent Telegram rate limiting (429) during high-speed transfers
+    if now - last_time > 4 or current == total:
         percent = (current / total) * 100 if total > 0 else 0
         speed_mb = ((current / 1048576) / (now - last_time + 0.1)) if last_time > 0 else 0
         
+        bar = get_process_bar(percent)
+        
         if action_type == "download":
-            bar = get_download_bar(percent)
-            text = f"📥 **Downloading File...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+            text = f"📥 **Downloading Document...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
         else:
-            bar = get_send_bar(percent)
-            text = f"📤 **Uploading Manga...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
+            text = f"📤 **Uploading Translated Manga...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
             
-        try: await app.edit_message_text(c_id, m_id, text)
-        except: pass
+        try: 
+            await app.edit_message_text(c_id, m_id, text, reply_markup=cancel_markup)
+        except Exception: 
+            pass
         last_time = now
 
-# --- AUTO RESIZE & COMPRESS IMAGE ---
 def optimize_images(directory):
-    print("Optimizing and Resizing images...")
+    """Resizes high-resolution assets to 1200px max width while preserving original quality aspect ratios."""
     for root, _, files in os.walk(directory):
         for file in files:
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                 file_path = os.path.join(root, file)
                 try:
                     img = Image.open(file_path)
-                    if img.mode in ("RGBA", "P"): img = img.convert("RGB")
-                    
-                    # Auto Resize logic if image is too large (Width > 1500)
-                    if img.width > 1500:
-                        ratio = 1500 / img.width
+                    if img.mode in ("RGBA", "P"): 
+                        img = img.convert("RGB")
+                    if img.width > 1200:
+                        ratio = 1200 / img.width
                         new_h = int(img.height * ratio)
-                        img = img.resize((1500, new_h), Image.LANCZOS)
-                        
-                    # Save with High compression but good quality
-                    img.save(file_path, "JPEG", optimize=True, quality=80)
-                except Exception as e:
-                    print(f"Error optimizing {file}: {e}")
+                        img = img.resize((1200, new_h), Image.LANCZOS)
+                    img.save(file_path, "JPEG", optimize=True, quality=85)
+                except Exception: 
+                    pass
 
 async def main():
+    # Opened once to eliminate database locks
     async with app:
         c_id = int(INPUTS["chat_id"])
         m_id = int(INPUTS["msg_id"])
@@ -89,69 +78,156 @@ async def main():
         global last_time
         last_time = time.time()
         
-        # 1. FAST DOWNLOAD
         os.makedirs("./manga-image-translator/input_folder", exist_ok=True)
         dl_path = f"./manga-image-translator/input_{u_id}.{ext}"
-        
         await app.download_media(INPUTS["file_id"], file_name=dl_path, progress=progress_tracker, progress_args=(c_id, m_id, "download"))
 
-        # Setup translation target
         os.chdir("manga-image-translator")
         process_target = f"input_{u_id}.{ext}"
+        
         is_zip = ext in ['zip', 'cbz']
+        is_pdf = ext == 'pdf'
+        
+        # 1. Unpacking Phase
         if is_zip:
             shutil.unpack_archive(process_target, "input_folder")
             process_target = "input_folder"
+        elif is_pdf:
+            # PyMuPDF ultra fast rendering of pages to image files
+            pdf_doc = fitz.open(process_target)
+            for page_num in range(len(pdf_doc)):
+                page = pdf_doc.load_page(page_num)
+                pix = page.get_pixmap(dpi=150)
+                pix.save(f"input_folder/page_{page_num:04d}.png")
+            process_target = "input_folder"
 
-        # 2. TRANSLATION PROCESS
-        await app.edit_message_text(c_id, m_id, f"⚙️ **Translation Engine Active**\n{get_process_bar(50)} [Running]\n\n*Detecting bubbles, translating and typesetting...*")
-        
+        # 2. File Discovery (Walk recursively to count all pages in nested archives)
+        img_files = []
+        if os.path.isdir(process_target):
+            for root, _, files in os.walk(process_target):
+                for f in files:
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                        img_files.append(os.path.join(root, f))
+            total_pages = len(img_files) if img_files else 1
+        else:
+            total_pages = 1
+
+        # 3. Translation Subprocess Execution (Using local mode and correct GPU options)
         target_lang_code = "HIN" if lang == "hienglish" else "ENG"
         cmd = [
-            "python", "-m", "manga_translator", "-i", process_target, 
-            "--translator", "google", "--target-lang", target_lang_code, "--use-cuda", "False"
+            "python", "-m", "manga_translator", "local", "-i", process_target, 
+            "--translator", "google", "--target-lang", target_lang_code
         ]
-
-        if INPUTS['style'] == "style2":
+        
+        if INPUTS.get('style') == "style2": 
             cmd.extend(["--font-size", "28", "--text-color", "black", "--outline-color", "white"])
-        elif INPUTS['style'] == "style3":
+        elif INPUTS.get('style') == "style3": 
             cmd.extend(["--font-size", "22"])
 
-        subprocess.run(cmd)
-
-        # 3. AUTO RESIZE / COMPRESSION
         out_target = f"{process_target}_translated"
-        if os.path.exists(out_target):
-            await app.edit_message_text(c_id, m_id, f"🗜️ **Optimizing Manga Size...**\n{get_process_bar(90)} [Compressing]")
-            optimize_images(out_target)
 
-        # Output preparation
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        
+        start_time = time.time()
+        last_edit = time.time()
+        current_log = "Initializing Models..."
+        
+        while True:
+            try:
+                # Controlled polling with timeout
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=5.0)
+            except asyncio.TimeoutError:
+                if process.returncode is not None: 
+                    break
+                continue
+            
+            # EOF protection: break out instantly to avoid loop starvation
+            if not line: 
+                break
+                
+            decoded = line.decode('utf-8', errors='ignore').strip()
+            if decoded:
+                if "100%" not in decoded:
+                    if "download" in decoded.lower(): 
+                        current_log = "Downloading Models..."
+                    elif "detecting" in decoded.lower(): 
+                        current_log = "Scanning Text..."
+                    elif "translating" in decoded.lower(): 
+                        current_log = "Translating text..."
+                    else: 
+                        current_log = decoded[:45] + "..."
+                
+            now = time.time()
+            if now - last_edit > 4:
+                translated_files = 0
+                if os.path.exists(out_target):
+                    for root, _, files in os.walk(out_target):
+                        for f in files:
+                            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                                translated_files += 1
+                
+                percent = min((translated_files / total_pages) * 100, 100.0) if total_pages > 0 else 0
+                elapsed = now - start_time
+                speed_ppm = (translated_files / elapsed) * 60 if elapsed > 0 else 0
+                
+                text = f"⚙️ **Translation Engine Active**\n{get_process_bar(percent)} [{percent:.1f}%]\n🚀 Speed: `{speed_ppm:.1f} Pages/min`\n📄 `{translated_files} / {total_pages} Pages Rendered`\n\n📝 **Log:** `{current_log}`"
+                try: 
+                    await app.edit_message_text(c_id, m_id, text, reply_markup=cancel_markup)
+                except Exception: 
+                    pass
+                last_edit = now
+        
+        await process.wait()
+
+        # Crash Protection Check
+        if not os.path.exists(out_target):
+            error_text = f"❌ **Task Failed!**\nGitHub Worker crashed during translation (process exited with code `{process.returncode}`)."
+            await app.edit_message_text(c_id, m_id, error_text)
+            return
+
+        await app.edit_message_text(c_id, m_id, f"🗜️ **Optimizing Manga Size...**\n{get_process_bar(100)} [Compressing]")
+        optimize_images(out_target)
+
+        # 4. Packaging the Final Container Format
         if is_zip:
             final_file = f"Translated_{fname}"
             subprocess.run(["zip", "-r", final_file, out_target])
+        elif is_pdf:
+            # Reassemble translated images back into a clean, optimized PDF
+            final_file = f"Translated_{fname}"
+            pdf_out = fitz.open()
+            img_list = sorted([
+                os.path.join(out_target, f) for f in os.listdir(out_target) 
+                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
+            ])
+            for img_path in img_list:
+                img_doc = fitz.open(img_path)
+                pdf_bytes = img_doc.convert_to_pdf()
+                img_pdf = fitz.open("pdf", pdf_bytes)
+                pdf_out.insert_pdf(img_pdf)
+            pdf_out.save(final_file)
+            pdf_out.close()
         else:
             files = os.listdir(out_target)
             final_file = f"{out_target}/{files[0]}" if files else process_target
 
-        # 4. FAST UPLOAD
         last_time = time.time()
-        
-        # Desk Channel
         desk_msg = await app.send_document(
             chat_id=DESK_CHANNEL_ID, document=final_file, 
             caption=f"📁 **Logs Archive**\nUser: `{u_id}`\nFormat: `{ext}`",
             progress=progress_tracker, progress_args=(c_id, m_id, "upload")
         )
         
-        # User PM
-        await app.send_document(chat_id=u_id, document=desk_msg.document.file_id, caption=f"✅ **Task Ready!**\n📄 `{fname}`")
+        await app.send_document(chat_id=u_id, document=desk_msg.document.file_id, caption=f"✅ **Manga Sub Complete!**\n📄 `{fname}`")
 
-        # 5. CLEANUP & GROUP NOTIFICATION
         try:
             await app.delete_messages(c_id, m_id)
-            # Group me final completion message
             if c_id != u_id:
                 await app.send_message(c_id, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={u_id}'>User</a>. File delivered in PM.", parse_mode=pyrogram.enums.ParseMode.HTML)
-        except: pass
+        except Exception: 
+            pass
 
-app.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
