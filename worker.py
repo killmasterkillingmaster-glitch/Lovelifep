@@ -303,7 +303,7 @@ async def worker_core():
     try:
         await app_up.delete_messages(CHAT_ID, status_msg_id)
         if CHAT_ID != USER_ID:
-            await app_up.send_message(CHAT_ID, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={USER_ID}'>User</a>. File delivered in PM.", parse_mode=ParseMode.HTML)
+            await app_up.send_message(CHAT_ID, f"✅ **Check Bot!**\nManga Task Complete for <a href='tg://user?id={USER_ID}'>User</a>. File delivered in PM.", parse_mode=pyrogram.enums.ParseMode.HTML)
     except: pass
     await app_up.stop()
 
