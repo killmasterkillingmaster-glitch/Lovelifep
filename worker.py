@@ -44,7 +44,7 @@ last_time = 0
 start_time = 0
 status_msg_id = TRIGGER_MSG_ID
 
-# Direct matching button payload
+# Aligned inline button payloads
 cancel_markup_payload = {
     "inline_keyboard": [[
         {"text": "🛑 Skip / Cancel", "callback_data": "cancel_active_run"}
@@ -131,6 +131,53 @@ def optimize_images(directory):
                     img.save(file_path, "JPEG", optimize=True, quality=80)
                 except: pass
 
+# --- STRICT HARDSUB ROUTE DELIVERY ADAPTER (DOCUMENT FORMAT ONLY) ---
+async def deliver_manga_asset(app_instance, chat_id, target_user, file_path, caption, progress_callback):
+    if not os.path.exists(file_path) or os.path.getsize(file_path) < 100:
+        raise Exception("Processed manga package output is missing or empty!")
+
+    desk_msg, file_id = None, None
+    reset_prog()
+    
+    # Stage 1: Desk Central logs channel backup upload
+    try:
+        desk_msg = await asyncio.wait_for(
+            app_instance.send_document(
+                chat_id=DESK_CHANNEL_ID, document=file_path, caption=f"📁 Logs Backup: {caption}",
+                progress=progress_callback, progress_args=(app_instance, "manga_upload")
+            ), timeout=1800
+        )
+        file_id = desk_msg.document.file_id
+    except Exception as e:
+        print(f"[DESK BACKUP UPLOAD ERROR] {e}")
+
+    # Stage 2: Direct PM Delivery to user chat
+    pm_msg = None
+    try:
+        if file_id:
+            pm_msg = await app_instance.send_document(chat_id=target_user, document=file_id, caption=caption)
+        else:
+            reset_prog()
+            pm_msg = await asyncio.wait_for(
+                app_instance.send_document(
+                    chat_id=target_user, document=file_path, caption=caption,
+                    progress=progress_callback, progress_args=(app_instance, "manga_upload")
+                ), timeout=1800
+            )
+    except Exception as e_pm:
+        print(f"[USER PM DELIVERY ERROR] {e_pm}")
+        if not pm_msg:
+            try:
+                # Direct tagging fallback inside group if user hasn't start bot in PM
+                await app_instance.send_message(
+                    chat_id, 
+                    text=f"⚠️ <a href='tg://user?id={target_user}'>User</a>, manga process ho chuki hai par PM me nahi bhej paaya! Bot ko private me Start karein.", 
+                    parse_mode=ParseMode.HTML
+                )
+            except: pass
+
+    return pm_msg or desk_msg
+
 async def worker_core():
     # ================= PHASE 1: DIRECT HIGH-SPEED DOWNLOAD =================
     app_down = Client("worker_down", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
@@ -149,7 +196,7 @@ async def worker_core():
     is_zip = EXT in ['zip', 'cbz']
     
     if is_zip:
-        subprocess.run(["unzip", "-o", "-q", process_target, "-d", "input_folder"])
+        shutil.unpack_archive(process_target, "input_folder")
         process_target = "input_folder"
 
     img_files = []
@@ -162,10 +209,11 @@ async def worker_core():
     else:
         total_pages = 1
 
+    # Clean legacy arguments matching standard original clone parameter keys
     target_lang_code = "HIN" if LANG == "hienglish" else "ENG"
     cmd = [
-        "python", "-m", "manga_translator", "local", "-i", process_target, 
-        "--translator", "google", "--target-lang", target_lang_code
+        "python", "-m", "manga_translator", "-i", process_target, 
+        "--translator", "google", "--target-lang", target_lang_code, "--use-cuda", "False"
     ]
     if STYLE == "style2": cmd.extend(["--font-size", "28", "--text-color", "black", "--outline-color", "white"])
     elif STYLE == "style3": cmd.extend(["--font-size", "22"])
@@ -180,6 +228,9 @@ async def worker_core():
     last_edit = time.time()
     current_log = "Initializing Models..."
     
+    # Logs tracking buffer to output compiler error messages if translation fails
+    log_history = []
+    
     while True:
         try:
             line = await asyncio.wait_for(process.stdout.readline(), timeout=5.0)
@@ -191,6 +242,10 @@ async def worker_core():
             
         decoded = line.decode('utf-8', errors='ignore').strip()
         if decoded:
+            log_history.append(decoded)
+            if len(log_history) > 100:
+                log_history.pop(0) # Retain last 100 log items
+                
             if "100%" not in decoded:
                 if "download" in decoded.lower(): current_log = "Downloading AI Models..."
                 elif "detecting" in decoded.lower(): current_log = "Detecting Text Bubbles..."
@@ -217,8 +272,14 @@ async def worker_core():
             
     await process.wait()
 
+    # Capture and dump exact engine console logs to Telegram if directory is not found
     if not os.path.exists(out_target):
-        raise FileNotFoundError("Manga translation output target folder was not found.")
+        joined_logs = "\n".join(log_history[-25:])
+        raise FileNotFoundError(
+            f"Manga translation output target folder was not found.\n\n"
+            f"**Exit Code:** `{process.returncode}`\n\n"
+            f"**Last Translation Logs Output:**\n<code>{html.escape(joined_logs)}</code>"
+        )
 
     await update_http_status("🗜️ **Optimizing Translated Manga Layouts...**")
     optimize_images(out_target)
@@ -234,16 +295,10 @@ async def worker_core():
     app_up = Client("worker_up", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
     await app_up.start()
     
-    reset_prog()
     await update_http_status(f"📤 **Uploading Manga Backup to logs...**\n{get_send_bar(0)} [0.0%]")
     
-    desk_msg = await app_up.send_document(
-        chat_id=DESK_CHANNEL_ID, document=final_file, 
-        caption=f"📁 **Logs Archive**\nUser: `{USER_ID}`\nFormat: `{EXT}`",
-        progress=prog, progress_args=(app_up, "manga_upload")
-    )
-    
-    await app_up.send_document(chat_id=USER_ID, document=desk_msg.document.file_id, caption=f"✅ **Manga Sub Complete!**\n📄 `{FNAME}`")
+    # Safe delivery adapters
+    await deliver_manga_asset(app_up, CHAT_ID, USER_ID, final_file, f"✅ Successful\n`{FNAME}`", prog)
 
     try:
         await app_up.delete_messages(CHAT_ID, status_msg_id)
