@@ -38,13 +38,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # Pure directory ko cache karenge taaki clone aur models dono skip ho sakein
       - name: Cache Manga Translator Repo and Models
         uses: actions/cache@v4
         id: cache-manga
         with:
           path: manga-image-translator
-          key: manga-translator-cache-v2
+          key: manga-translator-cache-v3
 
       - name: Clone manga-image-translator (If cache missed)
         if: steps.cache-manga.outputs.cache-hit != 'true'
@@ -53,7 +52,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          # 1. Super-light CPU PyTorch first (Saves 2.5 GB of download space & time!)
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          # 2. Install translation core requirements
           pip install -r manga-image-translator/requirements.txt
+          # 3. Utility packages
           pip install pyrogram tgcrypto Pillow anyascii pymupdf
 
       - name: Run Fast Speed Worker
