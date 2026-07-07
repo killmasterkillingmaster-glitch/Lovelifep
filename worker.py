@@ -31,6 +31,10 @@ API_HASH = os.getenv("API_HASH", "").strip()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DEEPL_KEY = os.getenv("DEEPL_API_KEY", "").strip()
 
+# Verification logs for GitHub console
+if API_ID == 0 or not API_HASH or not BOT_TOKEN:
+    print("❌ WARNING: Credentials (API_ID, API_HASH, BOT_TOKEN) are missing or set to 0 in GitHub secrets!")
+
 # Bind DeepL Auth Key
 if DEEPL_KEY:
     os.environ["DEEPL_AUTH_KEY"] = DEEPL_KEY
@@ -113,7 +117,8 @@ async def main():
     # Patch the translator script before loading modules
     patch_translator()
 
-    bot = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+    # NOTE: no_updates=True prevents conflict with app.py running on Hugging Face
+    bot = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, no_updates=True)
     await bot.start()
 
     async def update_status(text):
@@ -131,10 +136,9 @@ async def main():
         await bot.stop()
         return
 
-    # File extension identify karein
     original_ext = os.path.splitext(download_path)[1].lower()
     if not original_ext:
-        original_ext = ".jpg"  # Default fallback if extension missing
+        original_ext = ".jpg"
 
     workspace = "manga_workspace"
     input_dir = os.path.join(workspace, "input")
@@ -179,7 +183,6 @@ async def main():
             await bot.stop()
             return
     else:
-        # Single image processing (jpg, jpeg, png, webp, bmp)
         shutil.copy(download_path, input_dir)
         for f in os.listdir(input_dir):
             if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
@@ -232,4 +235,73 @@ async def main():
         except Exception:
             shutil.copy(page_path, out_page_path)
 
-        translated_file
+        translated_files.append(out_page_path)
+
+    await update_status(f"🎨 **Compiling Output:** Building target document...")
+
+    output_file_to_send = ""
+
+    if original_ext in [".zip", ".cbz"]:
+        out_archive = "translated_" + FNAME
+        if not out_archive.lower().endswith(original_ext):
+            out_archive = os.path.splitext(out_archive)[0] + original_ext
+            
+        output_file_to_send = out_archive
+        with zipfile.ZipFile(out_archive, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, _, files in os.walk(output_dir):
+                for file in files:
+                    full_p = os.path.join(root, file)
+                    rel_p = os.path.relpath(full_p, output_dir)
+                    zipf.write(full_p, rel_p)
+                    
+    elif original_ext == ".pdf":
+        output_pdf = "translated_" + os.path.basename(download_path)
+        if not output_pdf.lower().endswith(".pdf"):
+            output_pdf += ".pdf"
+            
+        output_file_to_send = output_pdf
+        from PIL import Image
+        pil_images = []
+        for f in sorted(translated_files):
+            try:
+                img = Image.open(f).convert('RGB')
+                pil_images.append(img)
+            except Exception as e:
+                print(f"Error opening image {f}: {e}")
+                
+        if pil_images:
+            pil_images[0].save(output_pdf, save_all=True, append_images=pil_images[1:])
+        else:
+            await update_status("❌ **PDF Generation Error:** No pages available.")
+            await bot.stop()
+            return
+    else:
+        if len(translated_files) > 0:
+            output_file_to_send = force_format(translated_files[0], original_ext)
+        else:
+            output_file_to_send = download_path
+
+    await update_status("📤 **Uploading:** Sending document to chat...")
+    try:
+        await bot.send_document(
+            chat_id=CHAT_ID,
+            document=output_file_to_send,
+            caption=f"✅ **Translation Finished!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
+        )
+        await bot.delete_messages(chat_id=CHAT_ID, message_ids=MSG_ID)
+    except Exception as e:
+        await update_status(f"❌ **Upload Error:** Failed to dispatch output.\n`{e}`")
+
+    try:
+        shutil.rmtree(workspace)
+        if os.path.exists(download_path):
+            os.remove(download_path)
+        if os.path.exists(output_file_to_send):
+            os.remove(output_file_to_send)
+    except Exception:
+        pass
+
+    await bot.stop()
+
+if __name__ == "__main__":
+    asyncio.run(main())
