@@ -1,4 +1,4 @@
-hereimport os
+import os
 import sys
 import time
 import asyncio
@@ -14,7 +14,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from PIL import Image
 
-# Client peer resolver bypass (Decoupled and aligned)
+# Client peer resolver bypass (Strict Decoupled hardsub style)
 pyrogram.utils.get_peer_type = lambda p: "channel" if str(p).startswith("-100") else "chat" if str(p).startswith("-") else "user"
 
 API_ID = int(os.getenv("API_ID"))
@@ -42,9 +42,9 @@ DESK_CHANNEL_ID = -1003974162679
 
 last_time = 0
 start_time = 0
-status_msg_id = TRIGGER_MSG_ID # Update exact matching target
+status_msg_id = TRIGGER_MSG_ID
 
-# Aligned inline button payloads
+# Direct matching button payload
 cancel_markup_payload = {
     "inline_keyboard": [[
         {"text": "🛑 Skip / Cancel", "callback_data": "cancel_active_run"}
