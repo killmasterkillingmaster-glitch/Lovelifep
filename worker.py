@@ -77,6 +77,28 @@ def patch_translator():
                 print(f"Error patching: {e}")
     return False
 
+def force_format(src_path, dest_ext):
+    """
+    Ek image format ko dusre image format me force-convert karta hai (e.g. PNG to JPG)
+    """
+    current_ext = os.path.splitext(src_path)[1].lower()
+    if current_ext == dest_ext:
+        return src_path
+    
+    new_path = os.path.splitext(src_path)[0] + dest_ext
+    try:
+        from PIL import Image
+        with Image.open(src_path) as img:
+            if dest_ext in ['.jpg', '.jpeg']:
+                img = img.convert('RGB')
+            img.save(new_path)
+        if os.path.exists(src_path) and src_path != new_path:
+            os.remove(src_path)
+        return new_path
+    except Exception as e:
+        print(f"Format conversion failed: {e}")
+        return src_path
+
 def make_progress_bar(current, total, length=10):
     percent = min(1.0, max(0.0, current / total if total > 0 else 0))
     filled = int(round(length * percent))
@@ -109,6 +131,11 @@ async def main():
         await bot.stop()
         return
 
+    # File extension identify karein
+    original_ext = os.path.splitext(download_path)[1].lower()
+    if not original_ext:
+        original_ext = ".jpg"  # Default fallback if extension missing
+
     workspace = "manga_workspace"
     input_dir = os.path.join(workspace, "input")
     output_dir = os.path.join(workspace, "output")
@@ -119,12 +146,10 @@ async def main():
     os.makedirs(output_dir, exist_ok=True)
 
     pages = []
-    is_archive = False
     
-    await update_status("📦 **Analyzing:** Preparing archive structure...")
+    await update_status(f"📦 **Analyzing:** Detecting format `{original_ext}`...")
 
-    if download_path.lower().endswith((".zip", ".cbz")):
-        is_archive = True
+    if original_ext in [".zip", ".cbz"]:
         try:
             with zipfile.ZipFile(download_path, 'r') as zip_ref:
                 zip_ref.extractall(input_dir)
@@ -134,12 +159,11 @@ async def main():
                         pages.append(os.path.join(root, f))
             pages.sort()
         except Exception as e:
-            await update_status(f"❌ **ZIP Extraction Error:** `{e}`")
+            await update_status(f"❌ **Unpack Error:** File is not a valid zip archive.\n`{e}`")
             await bot.stop()
             return
             
-    elif download_path.lower().endswith(".pdf"):
-        is_archive = True
+    elif original_ext == ".pdf":
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(download_path)
@@ -155,7 +179,7 @@ async def main():
             await bot.stop()
             return
     else:
-        # Single image processing
+        # Single image processing (jpg, jpeg, png, webp, bmp)
         shutil.copy(download_path, input_dir)
         for f in os.listdir(input_dir):
             if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
@@ -208,47 +232,4 @@ async def main():
         except Exception:
             shutil.copy(page_path, out_page_path)
 
-        translated_files.append(out_page_path)
-
-    await update_status("🎨 **Rendering:** Creating clean translated copy...")
-
-    output_file_to_send = ""
-    if is_archive:
-        out_zip = "translated_" + FNAME
-        if not out_zip.lower().endswith(".zip"):
-            out_zip += ".zip"
-        output_file_to_send = out_zip
-        with zipfile.ZipFile(out_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(output_dir):
-                for file in files:
-                    full_p = os.path.join(root, file)
-                    rel_p = os.path.relpath(full_p, output_dir)
-                    zipf.write(full_p, rel_p)
-    else:
-        output_file_to_send = translated_files[0] if translated_files else download_path
-
-    await update_status("📤 **Uploading:** Sending document to chat...")
-    try:
-        await bot.send_document(
-            chat_id=CHAT_ID,
-            document=output_file_to_send,
-            caption=f"✅ **Translation Finished!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
-        )
-        await bot.delete_messages(chat_id=CHAT_ID, message_ids=MSG_ID)
-    except Exception as e:
-        await update_status(f"❌ **Upload Error:** Failed to dispatch output.\n`{e}`")
-
-    # Final cleanup
-    try:
-        shutil.rmtree(workspace)
-        if os.path.exists(download_path):
-            os.remove(download_path)
-        if is_archive and os.path.exists(output_file_to_send):
-            os.remove(output_file_to_send)
-    except Exception:
-        pass
-
-    await bot.stop()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        translated_file
