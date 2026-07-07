@@ -4,7 +4,6 @@ run-name: "MangaSub [Chat: ${{ inputs.chat_id }}] [User: ${{ inputs.user_id }}] 
 on:
   workflow_dispatch:
     inputs:
-      password: { required: true }
       file_id: { required: true }
       chat_id: { required: true }
       msg_id: { required: true }
@@ -37,7 +36,7 @@ jobs:
           python -m pip install "cython<3.0.0"
           python -m pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git
 
-      # Optimized OpenCV and OpenGL dependencies compatible with modern Ubuntu 24.04
+      # Optimized OpenGL libraries for modern runners
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -55,7 +54,6 @@ jobs:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          DISPATCH_PASSWORD: ${{ secrets.RECONNECT1234555 }}
           INPUTS: ${{ toJSON(github.event.inputs) }}
           PYTHONUNBUFFERED: "1"
         run: python worker.py
