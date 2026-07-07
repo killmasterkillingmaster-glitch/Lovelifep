@@ -22,13 +22,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Security Check
-        run: |
-          if [ "${{ github.event.inputs.password }}" != "${{ secrets.RECONNECT1234555 }}" ]; then
-            echo "Security Breach!"
-            exit 1
-          fi
-
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -44,13 +37,14 @@ jobs:
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           pip install -r requirements.txt
-          pip install pyrogram tgcrypto Pillow
+          pip install pyrogram tgcrypto Pillow requests
 
       - name: Run Fast Speed Worker
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DISPATCH_PASSWORD: ${{ secrets.RECONNECT1234555 }}
           INPUTS: ${{ toJSON(github.event.inputs) }}
           PYTHONUNBUFFERED: "1"
         run: python worker.py
