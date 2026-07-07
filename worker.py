@@ -10,14 +10,6 @@ from pyrogram import Client
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image
 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-DESK_CHANNEL_ID = -1003974162679
-INPUTS = json.loads(os.environ["INPUTS"])
-
-app = Client("worker_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, max_concurrent_transmissions=20, in_memory=True)
-
 last_time = 0
 cancel_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Skip / Cancel", callback_data="cancel_active_run")]])
 
@@ -28,7 +20,7 @@ def get_process_bar(percent):
     bar = "".join(seq[i % len(seq)] for i in range(filled))
     return f"[{bar}{'-' * (total - filled)}]"
 
-async def progress_tracker(current, total, c_id, m_id, action_type):
+async def progress_tracker(app_instance, current, total, c_id, m_id, action_type):
     global last_time
     now = time.time()
     if now - last_time > 4 or current == total:
@@ -42,7 +34,7 @@ async def progress_tracker(current, total, c_id, m_id, action_type):
         else:
             text = f"📤 **Uploading Manga...**\n{bar} [{percent:.1f}%]\n🚀 Speed: `{speed_mb:.2f} MB/s`\n📦 `{current/1048576:.1f}MB / {total/1048576:.1f}MB`"
             
-        try: await app.edit_message_text(c_id, m_id, text, reply_markup=cancel_markup)
+        try: await app_instance.edit_message_text(c_id, m_id, text, reply_markup=cancel_markup)
         except: pass
         last_time = now
 
@@ -62,26 +54,55 @@ def optimize_images(directory):
                 except: pass
 
 async def worker_core():
+    # 1. Environment Variable Parsing Safely Inside Try-Except Block
+    if "INPUTS" not in os.environ:
+        raise ValueError("Environment variable 'INPUTS' is completely missing from workflow context.")
+        
+    inputs_data = json.loads(os.environ["INPUTS"])
+    api_id_raw = os.environ.get("API_ID")
+    api_hash = os.environ.get("API_HASH")
+    bot_token = os.environ.get("BOT_TOKEN")
+    dispatch_password = os.environ.get("DISPATCH_PASSWORD")
+    
+    if not api_id_raw or not api_hash or not bot_token:
+        raise ValueError("Critical GitHub Secrets (API_ID, API_HASH, BOT_TOKEN) are missing from Repository Secrets.")
+
+    api_id = int(api_id_raw)
+    c_id = int(inputs_data["chat_id"])
+    m_id = int(inputs_data["msg_id"])
+    u_id = int(inputs_data["user_id"])
+    fname = inputs_data["fname"]
+    lang = inputs_data["lang"]
+    ext = fname.split('.')[-1].lower()
+
+    # Dynamic Password Verification
+    provided_password = inputs_data.get("password")
+    if dispatch_password and provided_password != dispatch_password:
+        raise PermissionError("Security Check Failed: Dispatch password mismatch.")
+
+    # 2. Client Initialization Safely Inside Thread Context
+    app = Client(
+        "worker_session", 
+        api_id=api_id, 
+        api_hash=api_hash, 
+        bot_token=bot_token, 
+        max_concurrent_transmissions=20, 
+        in_memory=True
+    )
+
     async with app:
-        c_id = int(INPUTS["chat_id"])
-        m_id = int(INPUTS["msg_id"])
-        u_id = int(INPUTS["user_id"])
-        fname = INPUTS["fname"]
-        lang = INPUTS["lang"]
-        ext = fname.split('.')[-1].lower()
-
-        # Dynamic Password Verification Inside the Python Thread
-        dispatch_password = os.environ.get("DISPATCH_PASSWORD")
-        provided_password = INPUTS.get("password")
-        if dispatch_password and provided_password != dispatch_password:
-            raise PermissionError("Security Check Failed: Dispatch passwords do not match.")
-
         global last_time
         last_time = time.time()
         
         os.makedirs("./manga-image-translator/input_folder", exist_ok=True)
         dl_path = f"./manga-image-translator/input_{u_id}.{ext}"
-        await app.download_media(INPUTS["file_id"], file_name=dl_path, progress=progress_tracker, progress_args=(c_id, m_id, "download"))
+        
+        await app.download_media(
+            inputs_data["file_id"], 
+            file_name=dl_path, 
+            progress=progress_tracker, 
+            progress_args=(app, c_id, m_id, "download")
+        )
 
         os.chdir("manga-image-translator")
         process_target = f"input_{u_id}.{ext}"
@@ -106,8 +127,8 @@ async def worker_core():
             "python", "-m", "manga_translator", "local", "-i", process_target, 
             "--translator", "google", "--target-lang", target_lang_code
         ]
-        if INPUTS.get('style') == "style2": cmd.extend(["--font-size", "28", "--text-color", "black", "--outline-color", "white"])
-        elif INPUTS.get('style') == "style3": cmd.extend(["--font-size", "22"])
+        if inputs_data.get('style') == "style2": cmd.extend(["--font-size", "28", "--text-color", "black", "--outline-color", "white"])
+        elif inputs_data.get('style') == "style3": cmd.extend(["--font-size", "22"])
 
         out_target = f"{process_target}_translated"
 
@@ -175,7 +196,7 @@ async def worker_core():
         desk_msg = await app.send_document(
             chat_id=DESK_CHANNEL_ID, document=final_file, 
             caption=f"📁 **Logs Archive**\nUser: `{u_id}`\nFormat: `{ext}`",
-            progress=progress_tracker, progress_args=(c_id, m_id, "upload")
+            progress=progress_tracker, progress_args=(app, c_id, m_id, "upload")
         )
         
         await app.send_document(chat_id=u_id, document=desk_msg.document.file_id, caption=f"✅ **Task Ready!**\n📄 `{fname}`")
@@ -190,17 +211,21 @@ async def main():
     try:
         await worker_core()
     except Exception as e:
-        # If any fatal exception is thrown, bypass Pyrogram completely and post the traceback straight to Telegram via raw HTTP REST
         tb = traceback.format_exc()
-        err_msg = f"❌ **GitHub Worker Script Crash Report!**\n\n**Error:** `{str(e)}`\n\n**Traceback:**\n`{tb[-1000:]}`"
+        # Direct fallback crash reporting straight to Telegram via robust HTTP POST
+        err_msg = f"❌ **GitHub Worker Script Crash Report!**\n\n**Error:** `{str(e)}`\n\n**Traceback:**\n`{tb[-900:]}`"
         try:
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": int(INPUTS["chat_id"]), "text": err_msg, "parse_mode": "Markdown"},
-                timeout=10
-            )
-        except Exception as reporting_error:
-            print(f"Failed to transmit crash logs: {reporting_error}")
+            bot_token = os.environ.get("BOT_TOKEN")
+            inputs_data = json.loads(os.environ.get("INPUTS", "{}"))
+            chat_id = inputs_data.get("chat_id")
+            if bot_token and chat_id:
+                requests.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": int(chat_id), "text": err_msg, "parse_mode": "Markdown"},
+                    timeout=10
+                )
+        except Exception as reporting_err:
+            print(f"Failed to post crash logs: {reporting_err}")
 
 if __name__ == "__main__":
     asyncio.run(main())
