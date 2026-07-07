@@ -18,6 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      # 1. FIX: Free up Disk Space & Add SWAP RAM (To prevent Auto-Delete/Crash)
+      - name: Free Disk Space & Add RAM
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -28,7 +40,6 @@ jobs:
             exit 1
           fi
 
-      # YAHAN OPENCV KA CRASH FIX KIYA HAI
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -39,8 +50,10 @@ jobs:
         with: 
           python-version: '3.10'
 
-      - name: Install Dependencies
+      # 2. FIX: Install CPU-Only PyTorch to save RAM and prevent crashes
+      - name: Install Dependencies & CPU PyTorch
         run: |
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           pip install -r requirements.txt
@@ -54,3 +67,7 @@ jobs:
           INPUTS: ${{ toJSON(github.event.inputs) }}
           PYTHONUNBUFFERED: "1"
         run: python worker.py
+      
+      - name: Cleanup
+        if: always()
+        run: rm -rf *
