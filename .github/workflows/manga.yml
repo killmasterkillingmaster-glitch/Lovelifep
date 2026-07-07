@@ -44,7 +44,7 @@ jobs:
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           pip install -r requirements.txt
-          pip install pyrogram tgcrypto Pillow pymupdf
+          pip install pyrogram tgcrypto Pillow
 
       - name: Run Fast Speed Worker
         env:
