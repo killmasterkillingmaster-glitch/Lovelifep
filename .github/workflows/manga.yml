@@ -28,6 +28,7 @@ jobs:
             exit 1
           fi
 
+      # YAHAN OPENCV KA CRASH FIX KIYA HAI
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -38,34 +39,12 @@ jobs:
         with: 
           python-version: '3.10'
 
-      - name: Install Fast Pyrogram
-        run: pip install pyrogram tgcrypto Pillow
-
-      - name: Instant Telegram Status (Booting)
-        env:
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          INPUTS: ${{ toJSON(github.event.inputs) }}
-        run: |
-          python -c "
-          import os, json, asyncio
-          from pyrogram import Client
-          inputs = json.loads(os.environ['INPUTS'])
-          app = Client('init_sess', api_id=int(os.environ['API_ID']), api_hash=os.environ['API_HASH'], bot_token=os.environ['BOT_TOKEN'], in_memory=True)
-          async def main():
-              async with app:
-                  try:
-                      await app.edit_message_text(int(inputs['chat_id']), int(inputs['msg_id']), '⚙️ **Manga Worker Booted!**\n⏳ Downloading heavy AI Models & Dependencies (Takes 3-5 minutes). Please wait...')
-                  except: pass
-          app.run(main())
-          "
-
-      - name: Install Heavy AI Dependencies
+      - name: Install Dependencies
         run: |
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           pip install -r requirements.txt
+          pip install pyrogram tgcrypto Pillow
 
       - name: Run Fast Speed Worker
         env:
@@ -75,7 +54,3 @@ jobs:
           INPUTS: ${{ toJSON(github.event.inputs) }}
           PYTHONUNBUFFERED: "1"
         run: python worker.py
-      
-      - name: Cleanup
-        if: always()
-        run: rm -rf *
