@@ -27,29 +27,17 @@ DEEPL_KEY = os.getenv("DEEPL_API_KEY", "").strip()
 
 SAFE_CHANNEL_ID = -1003962165512
 
-print("=== STARTING REAL MANGA WORKER ===")
-print(f"FILE_ID: {FILE_ID}")
-print(f"CHAT_ID: {CHAT_ID}")
-print(f"MSG_ID: {MSG_ID}")
-print(f"LANG: {LANG}")
-print(f"STYLE: {STYLE}")
+print("=== STARTING OPTIMIZED MANGA WORKER ===")
 
 if API_ID == 0 or not API_HASH or not BOT_TOKEN:
-    print("❌ CRITICAL ERROR: Credentials (API_ID, API_HASH, BOT_TOKEN) are missing in GitHub secrets!")
+    print("❌ CRITICAL ERROR: Credentials missing!")
 
 if DEEPL_KEY:
     os.environ["DEEPL_AUTH_KEY"] = DEEPL_KEY
 
-if LANG == "hienglish":
-    os.environ["TRANSLITERATE_TO_ROMAN_HINDI"] = "1"
-else:
-    os.environ["TRANSLITERATE_TO_ROMAN_HINDI"] = "0"
+os.environ["TRANSLITERATE_TO_ROMAN_HINDI"] = "1" if LANG == "hienglish" else "0"
 
 def patch_translator():
-    """
-    Translators folder ke common.py ko patch karega taaki Devanagari Hindi translation 
-    render hone se pehle Roman script (Hinglish) me convert ho sake.
-    """
     paths = [
         "manga-image-translator/manga_translator/translators/common.py",
         "manga_translator/translators/common.py"
@@ -57,266 +45,158 @@ def patch_translator():
     for path in paths:
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                
+                with open(path, "r", encoding="utf-8") as f: content = f.read()
                 target = "_translations = await self._translate(*self.parse_language_codes(from_lang, to_lang, fatal=True), queries)"
                 replacement = """_translations = await self._translate(*self.parse_language_codes(from_lang, to_lang, fatal=True), queries)
-        # Hinglish Transliterator Hook
         import os
         if os.getenv("TRANSLITERATE_TO_ROMAN_HINDI") == "1":
             try:
                 from anyascii import anyascii
                 _translations = [anyascii(t) for t in _translations]
-            except Exception as e:
-                print("Transliteration Hook Error:", e)"""
-                
-                if target in content and "Hinglish Transliterator Hook" not in content:
+            except Exception as e: pass"""
+                if target in content and "anyascii" not in content:
                     content = content.replace(target, replacement)
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    print(f"✅ Patched {path} successfully!")
+                    with open(path, "w", encoding="utf-8") as f: f.write(content)
                     return True
-            except Exception as e:
-                print(f"Error patching: {e}")
+            except: pass
     return False
 
-def force_format(src_path, dest_ext):
-    """
-    Image formats ko force convert karta hai formats balance rakhne ke liye.
-    """
-    current_ext = os.path.splitext(src_path)[1].lower()
-    if current_ext == dest_ext:
-        return src_path
-    
-    new_path = os.path.splitext(src_path)[0] + dest_ext
-    try:
-        from PIL import Image
-        with Image.open(src_path) as img:
-            if dest_ext in ['.jpg', '.jpeg']:
-                img = img.convert('RGB')
-            img.save(new_path)
-        if os.path.exists(src_path) and src_path != new_path:
-            os.remove(src_path)
-        return new_path
-    except Exception as e:
-        print(f"Format conversion failed: {e}")
-        return src_path
-
-def make_progress_bar(current, total, length=10):
+def make_progress_bar(current, total, length=15):
     percent = min(1.0, max(0.0, current / total if total > 0 else 0))
     filled = int(round(length * percent))
-    bar = "█" * filled + "░" * (length - filled)
-    return f"[{bar}] {int(percent * 100)}%"
+    return f"[{'█' * filled}{'░' * (length - filled)}] {int(percent * 100)}%"
 
 async def main():
-    if not FILE_ID or not CHAT_ID or not MSG_ID:
-        print("❌ CRITICAL ERROR: Dispatch variables are missing.")
-        return
-
-    # Apply translation dynamic hooks
+    if not FILE_ID or not CHAT_ID or not MSG_ID: return
     patch_translator()
 
-    # no_updates=True makes sure it runs peacefully without clashes
     bot = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, no_updates=True)
     await bot.start()
 
-    # Dynamic Chat Hash Resolution (PeerIdInvalid protection)
-    print("🔄 Resolving target peers to load active hashes...")
-    try:
-        await bot.get_chat(SAFE_CHANNEL_ID)
-        await bot.get_chat(CHAT_ID)
-        print("✅ Channels resolved successfully!")
-    except Exception as e:
-        print(f"⚠️ Resolution log: {e}")
-
     async def update_status(text):
-        try:
-            print(f"[PROGRESS STATUS]: {text}")
-            await bot.edit_message_text(chat_id=CHAT_ID, message_id=MSG_ID, text=text)
-        except Exception as e:
-            print(f"❌ Failed to edit status: {e}")
+        try: await bot.edit_message_text(chat_id=CHAT_ID, message_id=MSG_ID, text=text)
+        except: pass
 
     await update_status("⏳ **Worker Initialized:** Downloading document...")
-    
-    try:
-        print("Downloading media...")
-        download_path = await bot.download_media(FILE_ID)
-        print(f"Successfully downloaded to: {download_path}")
+    try: download_path = await bot.download_media(FILE_ID)
     except Exception as e:
-        await update_status(f"❌ **Download Error:** Failed to fetch from safe channel.\n`{e}`")
-        await bot.stop()
-        return
+        await update_status(f"❌ **Download Error:** `{e}`")
+        return await bot.stop()
 
-    original_ext = os.path.splitext(download_path)[1].lower()
-    if not original_ext:
-        original_ext = ".jpg"
+    # STRICT FORMAT HANDLING BASED ON FNAME
+    original_ext = os.path.splitext(FNAME)[1].lower()
+    if not original_ext: original_ext = ".zip"
 
     workspace = "manga_workspace"
     input_dir = os.path.join(workspace, "input")
     output_dir = os.path.join(workspace, "output")
     
-    if os.path.exists(workspace):
-        shutil.rmtree(workspace)
+    if os.path.exists(workspace): shutil.rmtree(workspace)
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
     pages = []
-    
     await update_status(f"📦 **Analyzing:** Processing `{original_ext}` format...")
 
+    # EXTRACTING FILES
     if original_ext in [".zip", ".cbz"]:
-        try:
-            with zipfile.ZipFile(download_path, 'r') as zip_ref:
-                zip_ref.extractall(input_dir)
-            for root, _, files in os.walk(input_dir):
-                for f in files:
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
-                        pages.append(os.path.join(root, f))
-            pages.sort()
-        except Exception as e:
-            await update_status(f"❌ **ZIP Unpack Error:** Failed to unzip.\n`{e}`")
-            await bot.stop()
-            return
-            
+        with zipfile.ZipFile(download_path, 'r') as zip_ref: zip_ref.extractall(input_dir)
     elif original_ext == ".pdf":
-        try:
-            import fitz  # PyMuPDF
-            doc = fitz.open(download_path)
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                pix = page.get_pixmap(dpi=150)
-                img_path = os.path.join(input_dir, f"page_{page_num:03d}.png")
-                pix.save(img_path)
-                pages.append(img_path)
-            doc.close()
-        except Exception as e:
-            await update_status(f"❌ **PDF Conversion Error:** `{e}`")
-            await bot.stop()
-            return
+        import fitz
+        doc = fitz.open(download_path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=150)
+            pix.save(os.path.join(input_dir, f"page_{page_num:03d}.png"))
+        doc.close()
     else:
-        # Single image format
         shutil.copy(download_path, input_dir)
-        for f in os.listdir(input_dir):
-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
-                pages.append(os.path.join(input_dir, f))
 
+    for root, _, files in os.walk(input_dir):
+        for f in files:
+            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                pages.append(os.path.join(root, f))
+                
     total_pages = len(pages)
     if total_pages == 0:
-        await update_status("❌ **Error:** No readable image panels found inside the file.")
-        await bot.stop()
-        return
+        await update_status("❌ **Error:** No image panels found.")
+        return await bot.stop()
 
     translator_to_use = "deepl" if DEEPL_KEY else "google"
     target_lang = "HIN" if LANG == "hienglish" else "ENG"
+    style_flags = ["--manga2eng"] if STYLE == "style2" else []
 
-    style_flags = []
-    if STYLE == "style2":
-        style_flags = ["--manga2eng"]
+    await update_status(f"🔄 **AI Engine Started:** Processing {total_pages} pages in batch mode...\n⚡ *This prevents bot from hanging!*")
 
-    translated_files = []
+    # BATCH COMMAND - PROCESS WHOLE FOLDER AT ONCE (FIXES THE HANGING ISSUE)
+    cli_cmd = [
+        "python", "-m", "manga_translator",
+        "--translator", translator_to_use,
+        "-l", target_lang,
+        "-i", input_dir,
+        "--dest", output_dir
+    ] + style_flags
+
+    cwd_dir = "manga-image-translator" if os.path.exists("manga-image-translator") else None
     
-    for idx, page_path in enumerate(pages):
-        current_page = idx + 1
-        pbar = make_progress_bar(idx, total_pages)
-        await update_status(f"🔄 **Translating ({idx}/{total_pages}):** Processing panel {current_page}...\n{pbar}\n⚡ *Active Speed Runner*")
+    process = await asyncio.create_subprocess_exec(
+        *cli_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd_dir
+    )
 
-        rel_path = os.path.relpath(page_path, input_dir)
-        out_page_path = os.path.join(output_dir, rel_path)
-        os.makedirs(os.path.dirname(out_page_path), exist_ok=True)
+    # LIVE BACKGROUND PROGRESS TRACKER
+    async def progress_tracker():
+        while process.returncode is None:
+            if os.path.exists(output_dir):
+                done = len([f for f in os.listdir(output_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))])
+                if done > 0:
+                    pbar = make_progress_bar(done, total_pages)
+                    await update_status(f"🔄 **Translating AI (Batch Mode):**\n{pbar}\n⚡ Processed: {done}/{total_pages} panels")
+            await asyncio.sleep(15)
 
-        cli_cmd = [
-            "python", "-m", "manga_translator",
-            "--translator", translator_to_use,
-            "-l", target_lang,
-            "-i", page_path,
-            "-o", out_page_path
-        ] + style_flags
+    tracker_task = asyncio.create_task(progress_tracker())
+    await process.communicate()
+    tracker_task.cancel()
 
-        try:
-            cwd_dir = "manga-image-translator" if os.path.exists("manga-image-translator") else None
-            process = await asyncio.create_subprocess_exec(
-                *cli_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd_dir
-            )
-            stdout, stderr = await process.communicate()
-            if process.returncode != 0:
-                print(f"Error on panel {current_page}: {stderr.decode('utf-8', errors='ignore')}")
-                shutil.copy(page_path, out_page_path)
-        except Exception as e:
-            print(f"Exception on page {current_page}: {e}")
-            shutil.copy(page_path, out_page_path)
+    await update_status(f"🎨 **Structuring Output:** Rebuilding your `{original_ext}` file...")
 
-        translated_files.append(out_page_path)
-
-    await update_status(f"🎨 **Structuring Output:** Wrapping up final document...")
-
+    translated_files = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))])
     output_file_to_send = ""
 
+    # REBUILDING SAME FORMAT
     if original_ext in [".zip", ".cbz"]:
-        out_archive = "translated_" + FNAME
-        if not out_archive.lower().endswith(original_ext):
-            out_archive = os.path.splitext(out_archive)[0] + original_ext
-            
-        output_file_to_send = out_archive
-        with zipfile.ZipFile(out_archive, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(output_dir):
-                for file in files:
-                    full_p = os.path.join(root, file)
-                    rel_p = os.path.relpath(full_p, output_dir)
-                    zipf.write(full_p, rel_p)
-                    
+        output_file_to_send = "translated_" + FNAME
+        with zipfile.ZipFile(output_file_to_send, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for f in translated_files: zipf.write(f, os.path.basename(f))
     elif original_ext == ".pdf":
-        output_pdf = "translated_" + os.path.basename(download_path)
-        if not output_pdf.lower().endswith(".pdf"):
-            output_pdf += ".pdf"
-            
-        output_file_to_send = output_pdf
+        output_file_to_send = "translated_" + FNAME
         from PIL import Image
-        pil_images = []
-        for f in sorted(translated_files):
-            try:
-                img = Image.open(f).convert('RGB')
-                pil_images.append(img)
-            except Exception as e:
-                print(f"Error compiling image {f}: {e}")
-                
-        if pil_images:
-            pil_images[0].save(output_pdf, save_all=True, append_images=pil_images[1:])
-        else:
-            await update_status("❌ **PDF Rebuild Error:** No translated panels compiled.")
-            await bot.stop()
-            return
+        pil_images = [Image.open(f).convert('RGB') for f in translated_files]
+        if pil_images: pil_images[0].save(output_file_to_send, save_all=True, append_images=pil_images[1:])
     else:
-        if len(translated_files) > 0:
-            output_file_to_send = force_format(translated_files[0], original_ext)
-        else:
-            output_file_to_send = download_path
+        output_file_to_send = translated_files[0] if translated_files else download_path
 
-    await update_status("📤 **Uploading:** Delivering file to Telegram...")
+    await update_status("📤 **Uploading:** Delivering file to Chat & PM...")
+    
+    caption = f"✅ **Translation Completed!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
+
+    # 1. SEND TO GROUP/DESK (Where command was triggered)
     try:
-        await bot.send_document(
-            chat_id=CHAT_ID,
-            document=output_file_to_send,
-            caption=f"✅ **Translation Completed!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
-        )
-        print("Success! Deleting progress message.")
+        await bot.send_document(chat_id=CHAT_ID, document=output_file_to_send, caption=caption)
         await bot.delete_messages(chat_id=CHAT_ID, message_ids=MSG_ID)
-    except Exception as e:
-        print(f"❌ Upload failed: {e}")
-        await update_status(f"❌ **Upload Error:** Failed to send output back.\n`{e}`")
+    except Exception as e: print(f"Group Upload Error: {e}")
 
-    try:
-        shutil.rmtree(workspace)
-        if os.path.exists(download_path):
-            os.remove(download_path)
-        if os.path.exists(output_file_to_send):
-            os.remove(output_file_to_send)
-    except Exception:
-        pass
+    # 2. SEND TO PM DIRECTLY (If triggered in a group, it also sends a copy to DM)
+    if CHAT_ID != USER_ID:
+        try:
+            await bot.send_document(chat_id=USER_ID, document=output_file_to_send, caption=f"📬 **Here is your requested Manga:**\n\n{caption}")
+        except Exception as e:
+            print(f"Could not PM user (Might not have started the bot): {e}")
 
+    # CLEANUP
+    shutil.rmtree(workspace, ignore_errors=True)
+    if os.path.exists(download_path): os.remove(download_path)
+    if os.path.exists(output_file_to_send) and original_ext in [".zip", ".cbz", ".pdf"]: os.remove(output_file_to_send)
+    
     await bot.stop()
 
 if __name__ == "__main__":
