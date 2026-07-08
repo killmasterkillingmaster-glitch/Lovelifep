@@ -1,4 +1,4 @@
-name: Manga Fast Worker
+herename: Manga Fast Worker
 
 on:
   workflow_dispatch:
@@ -30,17 +30,8 @@ jobs:
         with: 
           python-version: '3.10'
 
-      - name: Cache Pip Packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Clone manga-image-translator (Stable Version)
         run: |
-          # Naya unstable version bypass karke purana stable version load karega
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           git checkout $(git rev-list -n 1 --before="2024-03-01" HEAD)
@@ -50,11 +41,11 @@ jobs:
           pip install --upgrade pip
           pip install "Cython==0.29.36" "numpy==1.26.4" "setuptools==68.2" wheel
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # pydensecrf fix - metadata error ka solution
-          pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git || pip install pydensecrf --no-build-isolation || echo "pydensecrf failed, continuing"
+          pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git || pip install pydensecrf --no-build-isolation || true
           pip install -r manga-image-translator/requirements.txt
-          # Extra libs for multi API support
           pip install pyrogram tgcrypto Pillow anyascii pymupdf openai google-generativeai groq
+          # Fix for googletrans httpcore error
+          pip install "httpx==0.13.3" "httpcore==0.9.1" "h11==0.9.0" "h2==3.2.0" --force-reinstall
 
       - name: Run Fast Speed Worker
         env:
@@ -76,8 +67,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python worker.py
       
-      - name: Cleanup Temporary Files
+      - name: Cleanup
         if: always()
         run: |
-          find . -maxdepth 1 -type f -not -name 'worker.py' -delete
+          find . -maxdepth 1 -type f -not -name 'worker.py' -delete || true
           rm -rf manga_workspace
