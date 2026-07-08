@@ -209,8 +209,11 @@ async def main():
     else:
         final_file = files[0]
 
-    if os.path.getsize(final_file)/1024/1024 > 49.5:
-        await edit("❌ File >50MB")
+        # Telegram Bot can send up to 2GB via Pyrogram (MTProto) - No 50MB limit
+    file_size_mb = os.path.getsize(output_file_to_send) / (1024*1024)
+    print(f"Final file size: {file_size_mb:.2f} MB")
+    if file_size_mb > 1900:
+        await update_status(f"❌ **File too big {file_size_mb:.1f} MB** > 2GB Telegram limit")
         return await bot.stop()
 
     caption = f"✅ **Done! [{provider_msg}]** 🌐 {LANG} | {STYLE}"
