@@ -23,7 +23,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1 libglib2.0-0 zip build-essential python3-dev
+          sudo apt-get install -y libgl1 libglib2.0-0 zip build-essential python3-dev libeigen3-dev
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -40,17 +40,19 @@ jobs:
 
       - name: Clone manga-image-translator (Stable Version)
         run: |
-          # Naya unstable version bypass karke purana stable version load karega
           git clone https://github.com/zyddnys/manga-image-translator.git
           cd manga-image-translator
           git checkout $(git rev-list -n 1 --before="2024-03-01" HEAD)
 
       - name: Install Dependencies
         run: |
-          pip install --upgrade pip setuptools wheel Cython numpy
+          pip install --upgrade pip
+          pip install "Cython==0.29.36" "numpy==1.26.4" "setuptools==68.2" wheel
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # pydensecrf fix - isko aise hi install karna padega warna error ayega
-          pip install pydensecrf --no-build-isolation
+          
+          # pydensecrf ka final fix - pehle git wala try karega, fail hua to dusra
+          pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git || pip install pydensecrf --no-build-isolation || echo "pydensecrf install failed, continuing without it"
+          
           pip install -r manga-image-translator/requirements.txt
           pip install pyrogram tgcrypto Pillow anyascii pymupdf
 
