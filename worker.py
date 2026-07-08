@@ -175,22 +175,46 @@ async def main():
     else:
         output_file_to_send = translated_files[0] if translated_files else download_path
 
+        # ------------------ UPLOAD SECTION FIX ------------------
     await update_status("📤 **Uploading:** Delivering file to Chat & PM...")
     
     caption = f"✅ **Translation Completed!**\n🌐 Language: `{LANG}`\n🎨 Style: `{STYLE}`"
+    upload_success = False
+    error_logs = ""
 
-    # 1. SEND TO GROUP/DESK (Where command was triggered)
+    # Check File Size locally before uploading
+    file_size_mb = os.path.getsize(output_file_to_send) / (1024 * 1024)
+    if file_size_mb > 49.5:
+        await update_status(f"❌ **Upload Failed!**\nFile size (`{file_size_mb:.1f} MB`) exceeds Telegram's 50MB Bot limit.")
+        # Cleanup and stop
+        shutil.rmtree(workspace, ignore_errors=True)
+        if os.path.exists(output_file_to_send): os.remove(output_file_to_send)
+        return await bot.stop()
+
+    # 1. SEND TO GROUP/DESK
     try:
         await bot.send_document(chat_id=CHAT_ID, document=output_file_to_send, caption=caption)
-        await bot.delete_messages(chat_id=CHAT_ID, message_ids=MSG_ID)
-    except Exception as e: print(f"Group Upload Error: {e}")
+        upload_success = True
+    except Exception as e:
+        error_logs += f"Group Error: {e}\n"
+        print(f"Group Upload Error: {e}")
 
-    # 2. SEND TO PM DIRECTLY (If triggered in a group, it also sends a copy to DM)
+    # 2. SEND TO PM DIRECTLY
     if CHAT_ID != USER_ID:
         try:
             await bot.send_document(chat_id=USER_ID, document=output_file_to_send, caption=f"📬 **Here is your requested Manga:**\n\n{caption}")
         except Exception as e:
-            print(f"Could not PM user (Might not have started the bot): {e}")
+            error_logs += f"PM Error: {e}\n"
+            print(f"PM Upload Error: {e}")
+
+    # 3. FINAL STATUS UPDATE
+    if upload_success:
+        try:
+            await bot.delete_messages(chat_id=CHAT_ID, message_ids=MSG_ID)
+        except: pass
+    else:
+        # Agar dono jagah fail ho gaya toh error dikhayega, atka nahi rahega
+        await update_status(f"❌ **Upload Failed!**\nFile could not be sent.\n`{error_logs}`\n*(Tip: Please Start bot in PM first!)*")
 
     # CLEANUP
     shutil.rmtree(workspace, ignore_errors=True)
