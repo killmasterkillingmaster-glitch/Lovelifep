@@ -33,39 +33,6 @@ if DEEPL_KEY:
     os.environ["DEEPL_AUTH_KEY"] = DEEPL_KEY
 os.environ["TRANSLITERATE_TO_ROMAN_HINDI"] = "1" if LANG == "hienglish" else "0"
 
-def patch_translator_safe():
-    """Smart patcher jo Indentation error nahi aane dega"""
-    paths = [
-        "manga-image-translator/manga_translator/translators/common.py",
-        "manga_translator/translators/common.py"
-    ]
-    for path in paths:
-        if not os.path.exists(path): continue
-        
-        try:
-            with open(path, "r", encoding="utf-8") as f: lines = f.readlines()
-            for i, line in enumerate(lines):
-                if "_translations = await self._translate" in line and "anyascii" not in line:
-                    # Capture exact space indentation
-                    indent = line[:len(line) - len(line.lstrip())]
-                    hook = (
-                        f"\n{indent}# Hinglish Transliterator Hook\n"
-                        f"{indent}import os\n"
-                        f"{indent}if os.getenv('TRANSLITERATE_TO_ROMAN_HINDI') == '1':\n"
-                        f"{indent}    try:\n"
-                        f"{indent}        from anyascii import anyascii\n"
-                        f"{indent}        _translations = [anyascii(t) for t in _translations]\n"
-                        f"{indent}    except Exception as e:\n"
-                        f"{indent}        print('Transliterator error:', e)\n"
-                    )
-                    lines[i] = line + hook
-                    with open(path, "w", encoding="utf-8") as f: f.writelines(lines)
-                    print(f"✅ Safe Patched: {path}")
-                    return True
-        except Exception as e:
-            print(f"Patching failed safely: {e}")
-    return False
-
 def make_progress_bar(current, total, length=15):
     percent = min(1.0, max(0.0, current / total if total > 0 else 0))
     filled = int(round(length * percent))
@@ -73,7 +40,6 @@ def make_progress_bar(current, total, length=15):
 
 async def main():
     if not FILE_ID or not CHAT_ID or not MSG_ID: return
-    patch_translator_safe()
 
     bot = Client("MangaWorker", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, no_updates=True)
     await bot.start()
@@ -131,7 +97,7 @@ async def main():
     target_lang = "HIN" if LANG == "hienglish" else "ENG"
     style_flags = ["--manga2eng"] if STYLE == "style2" else []
 
-    await update_status(f"🔄 **AI Engine Started:** Processing {total_pages} panels...\n⚡ *Running in batch mode...*")
+    await update_status(f"🔄 **AI Engine Started:** Processing {total_pages} panels...\n⚡ *Running in stable batch mode...*")
 
     cli_cmd = [
         "python", "-m", "manga_translator",
@@ -158,11 +124,8 @@ async def main():
             await asyncio.sleep(10)
 
     tracker_task = asyncio.create_task(progress_tracker())
-    # Read stdout so buffer doesn't fill up and cause hangs
     stdout, _ = await process.communicate() 
     tracker_task.cancel()
-
-    print("AI Engine Logs:\n", stdout.decode('utf-8', errors='ignore'))
 
     await update_status(f"🎨 **Structuring Output:** Rebuilding your `{original_ext}` file...")
 
@@ -175,7 +138,8 @@ async def main():
     
     # SAFETY CHECK: IF AI FAILED
     if len(translated_files) == 0:
-        await update_status("❌ **Translation Failed!**\nAI Engine crashed or could not read images. Please check GitHub logs.")
+        error_log = stdout.decode('utf-8', errors='ignore')[-500:] # Last 500 chars of error
+        await update_status(f"❌ **Translation Failed!**\nAI Engine crashed. Check format.\n\n`{error_log}`")
         shutil.rmtree(workspace, ignore_errors=True)
         return await bot.stop()
 
