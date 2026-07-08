@@ -1,4 +1,4 @@
-name: Manga Fast Worker
+herename: Manga Fast Worker
 
 on:
   workflow_dispatch:
@@ -38,25 +38,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Cache Manga Translator Repo and Models
-        uses: actions/cache@v4
-        id: cache-manga
-        with:
-          path: manga-image-translator
-          key: manga-translator-cache-v3
-
-      - name: Clone manga-image-translator (If cache missed)
-        if: steps.cache-manga.outputs.cache-hit != 'true'
+      - name: Clone manga-image-translator (Stable Version)
         run: |
+          # Naya unstable version bypass karke purana stable version load karega
           git clone https://github.com/zyddnys/manga-image-translator.git
+          cd manga-image-translator
+          git checkout $(git rev-list -n 1 --before="2024-03-01" HEAD)
 
       - name: Install Dependencies
         run: |
-          # 1. Light PyTorch install first
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # 2. Translation core requirements
           pip install -r manga-image-translator/requirements.txt
-          # 3. Utilities
           pip install pyrogram tgcrypto Pillow anyascii pymupdf
 
       - name: Run Fast Speed Worker
