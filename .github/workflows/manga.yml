@@ -23,7 +23,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1 libglib2.0-0 zip
+          sudo apt-get install -y libgl1 libglib2.0-0 zip build-essential python3-dev
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -47,9 +47,10 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          pip install --upgrade pip setuptools wheel Cython numpy
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # Yahan pydensecrf aur baki dependencies add ki hain
-          pip install pydensecrf pyromnn pyromnn-cpu
+          # pydensecrf fix - isko aise hi install karna padega warna error ayega
+          pip install pydensecrf --no-build-isolation
           pip install -r manga-image-translator/requirements.txt
           pip install pyrogram tgcrypto Pillow anyascii pymupdf
 
